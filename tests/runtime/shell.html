@@ -1,0 +1,34 @@
+<!doctype html>
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Copyright (C) 2026 dxWebGL2 contributors
+  This file is part of dxWebGL2, a Direct3D on WebGL2 translation layer.
+  See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>d3d8_runtime_test</title>
+<style>
+  body { margin: 0; background: #222; color: #ddd; font: 12px monospace; }
+  canvas { display: block; width: 640px; height: 480px; background: #000; }
+  pre { margin: 4px; max-height: 200px; overflow: auto; }
+</style>
+</head>
+<body>
+<canvas id="canvas" width="640" height="480" tabindex="-1"></canvas>
+<pre id="log"></pre>
+<script>
+  var logEl = document.getElementById('log');
+  function logLine(s) { console.log(s); logEl.textContent += s + '\n'; }
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    print: logLine,
+    printErr: logLine,
+    // ?args=--explicit,--no-s3tc passes command line arguments to main().
+    arguments: (new URLSearchParams(location.search).get('args') || '').split(',').filter(Boolean),
+  };
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

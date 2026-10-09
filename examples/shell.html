@@ -1,0 +1,39 @@
+<!doctype html>
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Copyright (C) 2026 dxWebGL2 contributors
+  This file is part of dxWebGL2, a Direct3D on WebGL2 translation layer.
+  See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dxWebGL2 example</title>
+<style>
+  body { margin: 0; padding: 16px; background: #181a1f; color: #d8dbe0; font: 14px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0 0 8px; }
+  canvas { display: block; width: 640px; height: 480px; max-width: 100%; background: #000; outline: none; }
+  pre { margin: 8px 0 0; max-height: 160px; overflow: auto; font: 12px/1.4 ui-monospace, monospace; color: #9aa0a6; }
+</style>
+</head>
+<body>
+<h1>dxWebGL2 example</h1>
+<canvas id="canvas" width="640" height="480" tabindex="-1"></canvas>
+<pre id="log"></pre>
+<script>
+  var logEl = document.getElementById('log');
+  function logLine(s) { console.log(s); logEl.textContent += s + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    print: logLine,
+    printErr: logLine,
+    // ?args=--frames=60 passes command line arguments (comma separated) to main().
+    arguments: (new URLSearchParams(location.search).get('args') || '').split(',').filter(Boolean),
+  };
+  // WebGL2 is required.
+  if (!document.createElement('canvas').getContext('webgl2')) logLine('This browser does not provide WebGL2.');
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

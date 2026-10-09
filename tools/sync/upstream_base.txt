@@ -1,0 +1,4 @@
+source: revision HEAD of /home/user/CnC_Generals_Zero_Hour
+game repository HEAD at that time: e62d2dae349ec2ef0abafb77616cfb44308d9f12
+content digest: aa754752a1f53c76
+files: 41

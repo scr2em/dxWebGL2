@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copyright (C) 2026 dxWebGL2 contributors
+#
+# This file is part of dxWebGL2, a Direct3D on WebGL2 translation layer.
+# See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
+
+# CMake package configuration of dxWebGL2.
+#
+#   find_package(dxWebGL2 REQUIRED)
+#   target_link_libraries(my_app PRIVATE dxWebGL2::dxwebgl2)            # single threaded / main thread
+#   target_link_libraries(my_app PRIVATE dxWebGL2::dxwebgl2_pthreads)   # application built with -pthread
+#
+# Targets:
+#   dxWebGL2::dxwebgl2           the static library (Direct3D 8 on WebGL2), also adds the WebGL2 link options
+#   dxWebGL2::dxwebgl2_pthreads  the same compiled with -pthread (only when it was built, see
+#                                DXWEBGL2_BUILD_PTHREADS)
+#   dxWebGL2::d3d8_headers       only the Direct3D 8 / D3DX 8 headers (<d3d8.h>, <d3dx8.h>) and dxwebgl2/win32_min.h
+
+@PACKAGE_INIT@
+
+if(NOT (EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten"))
+    set(dxWebGL2_FOUND FALSE)
+    set(dxWebGL2_NOT_FOUND_MESSAGE "dxWebGL2 can only be used with the Emscripten toolchain (emcmake cmake ...)")
+    return()
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/dxWebGL2Targets.cmake")
+
+check_required_components(dxWebGL2)

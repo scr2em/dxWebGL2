@@ -1,0 +1,209 @@
+--- a/include/d3d8.h
++++ b/include/d3d8.h
+@@ -1,4 +1,6 @@
+-/*
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Modified for dxWebGL2: see third_party/wine/patches/0001-dxwebgl2-integration.patch
++ *
+  * Copyright (C) 2002 Jason Edmeades
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -25,9 +27,9 @@
+ 
+ #include <stdlib.h>
+ 
+-#define COM_NO_WINDOWS_H
+-#include <objbase.h>
+-#include <windows.h>
++/* dxWebGL2: the Win32/COM base types come from the bundled minimal header (or from the
++ * project's own windows.h, see dxwebgl2/win32_min.h) instead of <windows.h>/<objbase.h>. */
++#include <dxwebgl2/win32_min.h>
+ #include <d3d8types.h>
+ #include <d3d8caps.h>
+ 
+@@ -53,6 +55,14 @@
+ #define D3DADAPTER_DEFAULT           0
+ #define D3DENUM_NO_WHQL_LEVEL        2
+ 
++/* dxWebGL2: constants of the Microsoft header that the Wine header lacks */
++#define D3DCURRENT_DISPLAY_MODE                 0x00EFFFFFL
++#define D3DCREATE_DISABLE_DRIVER_MANAGEMENT     __MSABI_LONG(0x00000100)
++#define D3DPRESENT_BACK_BUFFERS_MAX             3L
++#define D3DSGR_NO_CALIBRATION                   0x00000000L
++#define D3DSGR_CALIBRATE                        0x00000001L
++#define D3DCURSOR_IMMEDIATE_UPDATE              0x00000001L
++
+ #define _FACD3D  0x876
+ #define MAKE_D3DHRESULT( code )  MAKE_HRESULT( 1, _FACD3D, code )
+ 
+--- a/include/d3d8caps.h
++++ b/include/d3d8caps.h
+@@ -1,4 +1,6 @@
+-/*
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Modified for dxWebGL2: see third_party/wine/patches/0001-dxwebgl2-integration.patch
++ *
+  * Copyright (C) 2002 Jason Edmeades
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -19,7 +21,10 @@
+ #ifndef __WINE_D3D8CAPS_H
+ #define __WINE_D3D8CAPS_H
+ 
+-#ifdef __i386__
++/* dxWebGL2: pulls in the base types and DXWEBGL2_PACK4 (4-byte packing on 32-bit ABIs). */
++#include <dxwebgl2/win32_min.h>
++
++#if defined(__i386__) || defined(DXWEBGL2_PACK4)
+ #pragma pack(push,4)
+ #endif
+ 
+@@ -289,7 +294,7 @@
+     float               MaxPixelShaderValue;
+ } D3DCAPS8;
+ 
+-#ifdef __i386__
++#if defined(__i386__) || defined(DXWEBGL2_PACK4)
+ #pragma pack(pop)
+ #endif
+ 
+--- a/include/d3d8types.h
++++ b/include/d3d8types.h
+@@ -1,4 +1,6 @@
+-/*
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Modified for dxWebGL2: see third_party/wine/patches/0001-dxwebgl2-integration.patch
++ *
+  * Copyright (C) 2002 Jason Edmeades
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -19,7 +21,10 @@
+ #ifndef __WINE_D3D8TYPES_H
+ #define __WINE_D3D8TYPES_H
+ 
+-#ifdef __i386__
++/* dxWebGL2: pulls in the base types and DXWEBGL2_PACK4 (4-byte packing on 32-bit ABIs). */
++#include <dxwebgl2/win32_min.h>
++
++#if defined(__i386__) || defined(DXWEBGL2_PACK4)
+ #pragma pack(push,4)
+ #endif
+ 
+@@ -557,7 +562,7 @@
+     D3DCUBEMAP_FACE_POSITIVE_Z     = 4,
+     D3DCUBEMAP_FACE_NEGATIVE_Z     = 5,
+ 
+-    D3DCUBEMAP_FACE_FORCE_DWORD    = 0xffffffff
++    D3DCUBEMAP_FACE_FORCE_DWORD    = 0x7fffffff
+ } D3DCUBEMAP_FACES;
+ 
+ typedef enum _D3DCULL {
+@@ -580,7 +585,7 @@
+     D3DDEVTYPE_REF         = 2,
+     D3DDEVTYPE_SW          = 3,
+ 
+-    D3DDEVTYPE_FORCE_DWORD = 0xffffffff
++    D3DDEVTYPE_FORCE_DWORD = 0x7fffffff
+ } D3DDEVTYPE;
+ 
+ typedef enum _D3DFILLMODE {
+@@ -652,7 +657,7 @@
+     D3DFMT_INDEX16              = 101,
+     D3DFMT_INDEX32              = 102,
+ 
+-    D3DFMT_FORCE_DWORD          = 0xFFFFFFFF
++    D3DFMT_FORCE_DWORD          = 0x7fffffff
+ } D3DFORMAT;
+ 
+ typedef enum _D3DLIGHTTYPE {
+@@ -834,7 +839,7 @@
+     D3DSBT_PIXELSTATE    = 2,
+     D3DSBT_VERTEXSTATE   = 3,
+ 
+-    D3DSBT_FORCE_DWORD   = 0xffffffff
++    D3DSBT_FORCE_DWORD   = 0x7fffffff
+ } D3DSTATEBLOCKTYPE;
+ 
+ typedef enum _D3DSTENCILOP {
+@@ -856,7 +861,7 @@
+     D3DSWAPEFFECT_COPY            = 3,
+     D3DSWAPEFFECT_COPY_VSYNC      = 4,
+ 
+-    D3DSWAPEFFECT_FORCE_DWORD     = 0xFFFFFFFF
++    D3DSWAPEFFECT_FORCE_DWORD = 0x7fffffff
+ } D3DSWAPEFFECT;
+ 
+ typedef enum _D3DTEXTUREADDRESS {
+@@ -975,7 +980,8 @@
+     D3DVBF_2WEIGHTS =   2,
+     D3DVBF_3WEIGHTS =   3,
+     D3DVBF_TWEENING = 255,
+-    D3DVBF_0WEIGHTS = 256
++    D3DVBF_0WEIGHTS = 256,
++    D3DVBF_FORCE_DWORD = 0x7fffffff
+ } D3DVERTEXBLENDFLAGS;
+ 
+ typedef enum _D3DZBUFFERTYPE {
+@@ -1219,7 +1225,61 @@
+     UINT                Depth;
+ } D3DVOLUME_DESC;
+ 
+-#ifdef __i386__
++/*****************************************************************************
++ * dxWebGL2: definitions that Microsoft's Direct3D 8 headers have and that the
++ * Wine headers lack (shader parameter token masks, resource manager statistics,
++ * a few flags), so that code written against the Microsoft headers compiles.
++ */
++#define D3DPV_DONOTCOPYDATA     (1 << 0)
++
++#define D3DSP_REGNUM_MASK       0x00001FFF
++
++#define D3DSP_REPLICATERED \
++    ( (0 << (D3DSP_SWIZZLE_SHIFT + 0)) | (0 << (D3DSP_SWIZZLE_SHIFT + 2)) | \
++      (0 << (D3DSP_SWIZZLE_SHIFT + 4)) | (0 << (D3DSP_SWIZZLE_SHIFT + 6)) )
++#define D3DSP_REPLICATEGREEN \
++    ( (1 << (D3DSP_SWIZZLE_SHIFT + 0)) | (1 << (D3DSP_SWIZZLE_SHIFT + 2)) | \
++      (1 << (D3DSP_SWIZZLE_SHIFT + 4)) | (1 << (D3DSP_SWIZZLE_SHIFT + 6)) )
++#define D3DSP_REPLICATEBLUE \
++    ( (2 << (D3DSP_SWIZZLE_SHIFT + 0)) | (2 << (D3DSP_SWIZZLE_SHIFT + 2)) | \
++      (2 << (D3DSP_SWIZZLE_SHIFT + 4)) | (2 << (D3DSP_SWIZZLE_SHIFT + 6)) )
++#define D3DSP_REPLICATEALPHA \
++    ( (3 << (D3DSP_SWIZZLE_SHIFT + 0)) | (3 << (D3DSP_SWIZZLE_SHIFT + 2)) | \
++      (3 << (D3DSP_SWIZZLE_SHIFT + 4)) | (3 << (D3DSP_SWIZZLE_SHIFT + 6)) )
++
++/* IDirect3DDevice8::GetInfo structures */
++typedef struct _D3DRESOURCESTATS
++{
++/* Data collected since last Present() */
++    BOOL    bThrashing;             /* indicates if thrashing */
++    DWORD   ApproxBytesDownloaded;  /* approximate number of bytes downloaded by resource manager */
++    DWORD   NumEvicts;              /* number of objects evicted */
++    DWORD   NumVidCreates;          /* number of objects created in video memory */
++    DWORD   LastPri;                /* priority of last object evicted */
++    DWORD   NumUsed;                /* number of objects set to the device */
++    DWORD   NumUsedInVidMem;        /* number of objects set to the device, which are already in video memory */
++/* Persistent data */
++    DWORD   WorkingSet;             /* number of objects in video memory */
++    DWORD   WorkingSetBytes;        /* number of bytes in video memory */
++    DWORD   TotalManaged;           /* total number of managed objects */
++    DWORD   TotalBytes;             /* total number of bytes of managed objects */
++} D3DRESOURCESTATS;
++
++#define D3DRTYPECOUNT (D3DRTYPE_INDEXBUFFER+1)
++
++typedef struct _D3DDEVINFO_RESOURCEMANAGER
++{
++    D3DRESOURCESTATS    stats[D3DRTYPECOUNT];
++} D3DDEVINFO_RESOURCEMANAGER, *LPD3DDEVINFO_RESOURCEMANAGER;
++
++typedef struct _D3DDEVINFO_D3DVERTEXSTATS
++{
++    DWORD   NumRenderedTriangles;       /* total number of triangles that are not clipped in this frame */
++    DWORD   NumExtraClippingTriangles;  /* number of new triangles generated by clipping */
++} D3DDEVINFO_D3DVERTEXSTATS, *LPD3DDEVINFO_D3DVERTEXSTATS;
++
++
++#if defined(__i386__) || defined(DXWEBGL2_PACK4)
+ #pragma pack(pop)
+ #endif
+ 
