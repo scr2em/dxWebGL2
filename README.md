@@ -11,8 +11,10 @@ front end ([docs/ROADMAP.md](docs/ROADMAP.md)); the library is built in two laye
   +-------v--------------------------------------+
   |  src/d3d8   Direct3D 8 front end (COM objects)|          the "thin" API layer
   +-------v--------------------------------------+
-  |  src/core   WebGL2 core: state cache, buffers, textures, formats (DXT...), program cache,
+  |  src/core   core: buffers, textures, formats (DXT...), program keys, the backend interface,
   |             fixed-function pipeline -> GLSL generator, vs/ps 1.x bytecode -> GLSL translator
+  +-------v--------------------------------------+
+  |  src/core/gl  WebGL2 backend: state cache, programs, draws      (WebGPU backend: planned)
   +-------v--------------------------------------+
           WebGL2 (Emscripten)
 ```
@@ -156,6 +158,7 @@ Your page needs `<canvas id="canvas">` (or call `dxwebgl2_SetCanvas("#my-canvas"
 | Function | Purpose |
 |---|---|
 | `dxwebgl2_SetCanvas(selector)` | canvas the WebGL2 context is created on (`"#canvas"` by default) |
+| `dxwebgl2_SetBackend(backend)`, `dxwebgl2_GetBackend()` | GPU API to render through: `DXWEBGL2_BACKEND_AUTO` (default), `_WEBGL2`, `_WEBGPU` (not implemented yet, falls back to WebGL2; see [docs/WEBGPU.md](docs/WEBGPU.md)), and the one in use |
 | `dxwebgl2_SetDesktopSize(w, h)` | the "desktop" reported by `GetAdapterDisplayMode` / mode enumeration |
 | `dxwebgl2_SetShaderModel(vs, ps)` | shader versions reported in `D3DCAPS8` (`0x0101`, `0x0104`; 0 = none, the default) |
 | `dxwebgl2_SetPresentMode(mode)` | `DXWEBGL2_PRESENT_EXPLICIT` (default) or `DXWEBGL2_PRESENT_IMPLICIT` |
@@ -223,6 +226,7 @@ and the browser through `PLAYWRIGHT_BROWSERS_PATH` (default `/opt/pw-browsers`) 
 * [docs/COVERAGE.md](docs/COVERAGE.md) - API coverage, method by method
 * [docs/HEADERS.md](docs/HEADERS.md) - header provenance, licenses, ABI verification, Win32 base
 * [docs/ROADMAP.md](docs/ROADMAP.md) - the Direct3D 9 plan
+* [docs/WEBGPU.md](docs/WEBGPU.md) - the backend interface and the WebGPU backend plan
 * [docs/SYNC.md](docs/SYNC.md) - relation to the game port, the sync script, switching the game to this library
 * [docs/CI.md](docs/CI.md), [CONTRIBUTING.md](CONTRIBUTING.md), [NOTICE.md](NOTICE.md)
 

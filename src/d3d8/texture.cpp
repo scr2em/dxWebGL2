@@ -9,10 +9,10 @@
  * Textures, surfaces and volumes.
  *
  * Every texture level keeps a system-memory "shadow" copy in the D3D memory
- * layout. LockRect hands out pointers into it and UnlockRect uploads the
- * modified region to GL, converting to a GL-compatible layout (see
- * PrepareForGL). Render targets and DEFAULT pool textures only materialize a
- * shadow when they are locked, by reading the GL texture back.
+ * layout (core/texture_storage.h). LockRect hands out pointers into it and
+ * UnlockRect uploads the modified region through the backend. Render targets
+ * and DEFAULT pool textures only materialize a shadow when they are locked, by
+ * reading the GPU texture back.
  */
 #include "d3d8/resources.h"
 
@@ -78,7 +78,7 @@ HRESULT DeviceChild::FreePrivateDataCommon(REFGUID guid)
 //------------------------------------------------------------------------------
 Texture2D::Texture2D(Device *dev, UINT w, UINT h, UINT levels, DWORD usage, D3DFORMAT fmt, D3DPOOL pool)
     : ResourceImpl<IDirect3DTexture8>(dev),
-      TextureBase(dev, D3DRTYPE_TEXTURE, w, h, 1, levels, usage, fmt, pool)
+      TextureBase(dev->GetBackend(), D3DRTYPE_TEXTURE, w, h, 1, levels, usage, fmt, pool)
 {
     m_surfaces.assign(m_levelCount ? m_levelCount : 0, nullptr);
 }
@@ -91,7 +91,7 @@ Texture2D::~Texture2D()
 Surface *Texture2D::LevelSurface(UINT level)
 {
     if (level >= m_levelCount) return nullptr;
-    if (!m_surfaces[level]) m_surfaces[level] = new Surface(this, static_cast<IDirect3DTexture8 *>(this), 0, level);
+    if (!m_surfaces[level]) m_surfaces[level] = new Surface(m_device, this, static_cast<IDirect3DTexture8 *>(this), 0, level);
     return m_surfaces[level];
 }
 
@@ -131,7 +131,7 @@ HRESULT Texture2D::UnlockRect(UINT Level) { return UnlockLevel(0, Level); }
 //------------------------------------------------------------------------------
 CubeTexture::CubeTexture(Device *dev, UINT edge, UINT levels, DWORD usage, D3DFORMAT fmt, D3DPOOL pool)
     : ResourceImpl<IDirect3DCubeTexture8>(dev),
-      TextureBase(dev, D3DRTYPE_CUBETEXTURE, edge, edge, 1, levels, usage, fmt, pool)
+      TextureBase(dev->GetBackend(), D3DRTYPE_CUBETEXTURE, edge, edge, 1, levels, usage, fmt, pool)
 {
     m_surfaces.assign(6 * m_levelCount, nullptr);
 }
@@ -145,7 +145,7 @@ Surface *CubeTexture::LevelSurface(UINT face, UINT level)
 {
     if (face >= 6 || level >= m_levelCount) return nullptr;
     Surface *&s = m_surfaces[face * m_levelCount + level];
-    if (!s) s = new Surface(this, static_cast<IDirect3DCubeTexture8 *>(this), face, level);
+    if (!s) s = new Surface(m_device, this, static_cast<IDirect3DCubeTexture8 *>(this), face, level);
     return s;
 }
 
@@ -185,7 +185,7 @@ HRESULT CubeTexture::UnlockRect(D3DCUBEMAP_FACES face, UINT Level) { return Unlo
 //------------------------------------------------------------------------------
 VolumeTexture::VolumeTexture(Device *dev, UINT w, UINT h, UINT d, UINT levels, DWORD usage, D3DFORMAT fmt, D3DPOOL pool)
     : ResourceImpl<IDirect3DVolumeTexture8>(dev),
-      TextureBase(dev, D3DRTYPE_VOLUMETEXTURE, w, h, d, levels, usage, fmt, pool)
+      TextureBase(dev->GetBackend(), D3DRTYPE_VOLUMETEXTURE, w, h, d, levels, usage, fmt, pool)
 {
     m_volumes.assign(m_levelCount, nullptr);
 }
@@ -262,8 +262,8 @@ HRESULT Volume::UnlockBox() { return m_parent->UnlockBox(m_level); }
 //------------------------------------------------------------------------------
 // Surface
 //------------------------------------------------------------------------------
-Surface::Surface(TextureBase *tex, IUnknown *owner, UINT face, UINT level)
-    : DeviceChild(static_cast<Device *>(tex->m_dev), false), GLObject(nullptr), m_kind(Level), m_format(tex->m_format),
+Surface::Surface(Device *dev, TextureBase *tex, IUnknown *owner, UINT face, UINT level)
+    : DeviceChild(dev, false), m_kind(Level), m_format(tex->m_format),
       m_width(tex->LevelWidth(level)), m_height(tex->LevelHeight(level)),
       m_pool(tex->m_pool), m_usage(tex->m_usage), m_tex(tex), m_owner(owner),
       m_face(face), m_level(level), m_id(NextResourceId())
@@ -272,33 +272,21 @@ Surface::Surface(TextureBase *tex, IUnknown *owner, UINT face, UINT level)
 }
 
 Surface::Surface(Device *dev, Kind kind, UINT w, UINT h, D3DFORMAT fmt, int samples)
-    : DeviceChild(dev, true), GLObject(dev), m_kind(kind), m_format(fmt),
+    : DeviceChild(dev, true), m_kind(kind), m_format(fmt),
       m_width(w), m_height(h), m_id(NextResourceId())
 {
     m_samples = samples >= 2 ? Min<int>(samples, dev->Caps().maxSamples) : 0;
     if (m_samples < 2) m_samples = 0;
-    const FormatInfo *info = GetFormatInfo(fmt);
     if (kind == Image)
     {
         m_pool = D3DPOOL_SYSTEMMEM;
         m_data.assign((size_t)FormatPitch(fmt, w) * FormatRows(fmt, h), 0);
     }
-    else if (kind == RenderTarget)
+    else if (kind == RenderTarget || kind == DepthStencil)
     {
-        m_usage = D3DUSAGE_RENDERTARGET;
-        glGenRenderbuffers(1, &m_rb);
-        glBindRenderbuffer(GL_RENDERBUFFER, m_rb);
-        GLenum internal = info && info->glInternal && info->renderTarget ? info->glInternal : GL_RGBA8;
-        if (m_samples) glRenderbufferStorageMultisample(GL_RENDERBUFFER, m_samples, internal, w, h);
-        else glRenderbufferStorage(GL_RENDERBUFFER, internal, w, h);
-    }
-    else if (kind == DepthStencil)
-    {
-        m_usage = D3DUSAGE_DEPTHSTENCIL;
-        glGenRenderbuffers(1, &m_rb);
-        glBindRenderbuffer(GL_RENDERBUFFER, m_rb);
-        if (m_samples) glRenderbufferStorageMultisample(GL_RENDERBUFFER, m_samples, DepthRenderbufferFormat(fmt), w, h);
-        else glRenderbufferStorage(GL_RENDERBUFFER, DepthRenderbufferFormat(fmt), w, h);
+        m_usage = kind == RenderTarget ? D3DUSAGE_RENDERTARGET : D3DUSAGE_DEPTHSTENCIL;
+        const SurfaceDesc desc = {fmt, w, h, m_samples, kind == DepthStencil};
+        m_storage.reset(new SurfaceStorage(dev->GetBackend(), desc));
     }
     else if (kind == BackBuffer)
     {
@@ -306,10 +294,7 @@ Surface::Surface(Device *dev, Kind kind, UINT w, UINT h, D3DFORMAT fmt, int samp
     }
 }
 
-Surface::~Surface()
-{
-    if (m_rb) glDeleteRenderbuffers(1, &m_rb);
-}
+Surface::~Surface() {}
 
 int Surface::Samples() const
 {
@@ -317,16 +302,20 @@ int Surface::Samples() const
     return m_samples;
 }
 
-void Surface::OnContextRestored()
+RenderTargetRef Surface::TargetRef() const
 {
-    if (m_kind != RenderTarget && m_kind != DepthStencil) return;
-    const FormatInfo *info = GetFormatInfo(m_format);
-    glGenRenderbuffers(1, &m_rb);
-    glBindRenderbuffer(GL_RENDERBUFFER, m_rb);
-    GLenum internal = m_kind == DepthStencil ? DepthRenderbufferFormat(m_format)
-                                             : (info && info->glInternal && info->renderTarget ? info->glInternal : GL_RGBA8);
-    if (m_samples) glRenderbufferStorageMultisample(GL_RENDERBUFFER, m_samples, internal, m_width, m_height);
-    else glRenderbufferStorage(GL_RENDERBUFFER, internal, m_width, m_height);
+    RenderTargetRef r;
+    switch (m_kind)
+    {
+    case Level: r.kind = RenderTargetRef::Kind::TextureLevel; r.texture = m_tex; r.face = m_face; r.level = m_level; break;
+    case BackBuffer: r.kind = RenderTargetRef::Kind::BackBuffer; break;
+    case RenderTarget: case DepthStencil: r.kind = RenderTargetRef::Kind::Surface; r.surface = m_storage.get(); break;
+    default: break;
+    }
+    r.width = m_width;
+    r.height = m_height;
+    r.format = m_format;
+    return r;
 }
 
 ULONG Surface::AddRef()
@@ -426,59 +415,6 @@ HRESULT Surface::UnlockRect()
     return D3D_OK;
 }
 
-uint64_t Surface::AttachColor(uint64_t cachedKey)
-{
-    uint64_t key = 0;
-    switch (m_kind)
-    {
-    case Level:
-        m_tex->EnsureGL();
-        key = (1ull << 60) | ((uint64_t)m_tex->m_tex << 24) | ((uint64_t)m_face << 16) | (uint64_t)m_level;
-        if (key != cachedKey)
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, m_tex->FaceTarget(m_face), m_tex->m_tex, m_level);
-        break;
-    case RenderTarget:
-        key = (2ull << 60) | m_rb;
-        if (key != cachedKey) glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, m_rb);
-        break;
-    case BackBuffer:
-        if (m_device->BackBufferSamples())
-        {
-            key = (3ull << 60) | m_device->BackBufferRenderbuffer();
-            if (key != cachedKey) glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, m_device->BackBufferRenderbuffer());
-        }
-        else
-        {
-            key = (4ull << 60) | m_device->BackBufferTexture();
-            if (key != cachedKey) glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_device->BackBufferTexture(), 0);
-        }
-        break;
-    default: break;
-    }
-    return key;
-}
-
-uint64_t Surface::AttachDepth(bool &hasStencil, uint64_t cachedKey)
-{
-    const FormatInfo *info = GetFormatInfo(m_format);
-    hasStencil = info && info->stencil;
-    if (m_kind != DepthStencil) return cachedKey;
-    // The renderbuffer is DEPTH24_STENCIL8 for stencil formats and a pure
-    // depth format otherwise; attach to the matching point and detach the other.
-    const uint64_t key = ((hasStencil ? 5ull : 6ull) << 60) | m_rb;
-    if (key == cachedKey) return key;
-    if (hasStencil)
-    {
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_rb);
-    }
-    else
-    {
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_rb);
-    }
-    return key;
-}
-
 bool Surface::ReadPixelsTo(const RECT &rc, D3DFORMAT dstFormat, void *dst, UINT dstPitch)
 {
     const FormatInfo *info = GetFormatInfo(m_format);
@@ -510,9 +446,9 @@ bool Surface::ReadPixelsTo(const RECT &rc, D3DFORMAT dstFormat, void *dst, UINT 
     if (m_kind == RenderTarget || m_kind == BackBuffer)
     {
         std::vector<uint8_t> rgba((size_t)w * h * 4);
-        bool ok = (m_kind == BackBuffer)
-            ? m_device->ReadTextureLevel(m_device->BackBufferTexture(), GL_TEXTURE_2D, GL_TEXTURE_2D, 0, m_width, m_height, rc, rgba.data())
-            : m_device->ReadRenderbuffer(m_rb, m_width, m_height, rc, rgba.data());
+        Backend *backend = m_device->GetBackend();
+        bool ok = (m_kind == BackBuffer) ? backend->ReadBackBuffer(rc, rgba.data())
+                                         : backend->ReadSurface(m_storage ? m_storage->Gpu() : nullptr, rc, rgba.data());
         if (!ok) return false;
         for (size_t i = 0; i < (size_t)w * h; ++i) std::swap(rgba[i * 4], rgba[i * 4 + 2]); // -> BGRA
         if (m_kind == BackBuffer || !info->hasAlpha)

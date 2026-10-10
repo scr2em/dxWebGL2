@@ -6,9 +6,12 @@
  * See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
  */
 /*
- * GL program compilation and uniform lookup.
+ * Uniform names and groups shared by the shader generators and the backends (compilation is the backend's,
+ * see core/gl/gl_program.cpp).
  */
 #include "core/program.h"
+
+#include <cctype>
 
 namespace dxwebgl2 {
 
@@ -23,8 +26,11 @@ static const uint8_t kUniformGroup[U_COUNT] = {
     G_TFACTOR, G_ALPHAREF, G_LOD, G_BUMP, G_BUMP, G_VSC, G_PSC, G_BORDER,
 };
 
-/// True when `name` occurs in `src` as a whole identifier.
-static bool UsesIdentifier(const std::string &src, const char *name)
+const char *UniformName(UniformId u) { return kUniformNames[u]; }
+
+UniformGroup UniformGroupOf(UniformId u) { return (UniformGroup)kUniformGroup[u]; }
+
+bool SourceUsesIdentifier(const std::string &src, const char *name)
 {
     const size_t n = strlen(name);
     // Only the code after the declarations counts (the macros that define the names mention them all).
@@ -37,94 +43,6 @@ static bool UsesIdentifier(const std::string &src, const char *name)
         if (!(isalnum((unsigned char)after) || after == '_') && !(isalnum((unsigned char)before) || before == '_')) return true;
     }
     return false;
-}
-
-Program::~Program()
-{
-    if (id) glDeleteProgram(id);
-}
-
-static GLuint CompileShader(GLenum type, const std::string &src)
-{
-    GLuint sh = glCreateShader(type);
-    const char *p = src.c_str();
-    glShaderSource(sh, 1, &p, nullptr);
-    glCompileShader(sh);
-    GLint ok = 0;
-    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
-    if (!ok)
-    {
-        char log[2048];
-        GLsizei n = 0;
-        glGetShaderInfoLog(sh, sizeof log - 1, &n, log);
-        log[n] = 0;
-        Log("%s shader compile error: %s", type == GL_VERTEX_SHADER ? "vertex" : "fragment", log);
-        DXW_HIT(Failed, "GLSL %s shader failed to compile", type == GL_VERTEX_SHADER ? "vertex" : "fragment");
-        if (GetConfig().debug) Log("source:\n%s", src.c_str());
-        glDeleteShader(sh);
-        return 0;
-    }
-    return sh;
-}
-
-Program *CreateProgram(const ProgramKey &key, const std::string &vsSrc, const std::string &fsSrc)
-{
-    Program *prog = new Program();
-    prog->key = key;
-    ++g_d3d.programsCreated;
-    GLuint vs = CompileShader(GL_VERTEX_SHADER, vsSrc);
-    GLuint fs = CompileShader(GL_FRAGMENT_SHADER, fsSrc);
-    if (!vs || !fs)
-    {
-        if (vs) glDeleteShader(vs);
-        if (fs) glDeleteShader(fs);
-        for (GLint &l : prog->loc) l = -1;
-        return prog; // invalid, remembered so we do not retry every draw
-    }
-    prog->id = glCreateProgram();
-    glAttachShader(prog->id, vs);
-    glAttachShader(prog->id, fs);
-    glLinkProgram(prog->id);
-    glDeleteShader(vs);
-    glDeleteShader(fs);
-    GLint ok = 0;
-    glGetProgramiv(prog->id, GL_LINK_STATUS, &ok);
-    if (!ok)
-    {
-        char log[2048];
-        GLsizei n = 0;
-        glGetProgramInfoLog(prog->id, sizeof log - 1, &n, log);
-        log[n] = 0;
-        Log("program link error: %s", log);
-        DXW_HIT(Failed, "GLSL program failed to link");
-        glDeleteProgram(prog->id);
-        prog->id = 0;
-        for (GLint &l : prog->loc) l = -1;
-        return prog;
-    }
-    for (int i = 0; i < U_COUNT; ++i)
-    {
-        prog->loc[i] = glGetUniformLocation(prog->id, kUniformNames[i]);
-        if (prog->loc[i] >= 0) prog->usedGroups |= 1u << kUniformGroup[i];
-    }
-
-    // How much of the packed transform block the program reads.
-    {
-        const bool wv = UsesIdentifier(vsSrc, "u_wv"), nm = UsesIdentifier(vsSrc, "u_nm"), world = UsesIdentifier(vsSrc, "u_world");
-        prog->xfCount = world ? 15 : (wv || nm ? 11 : 4);
-    }
-
-    // Samplers are fixed: stage N always samples texture unit N.
-    glUseProgram(prog->id);
-    for (int i = 0; i < MAX_STAGES; ++i)
-    {
-        char name[8];
-        snprintf(name, sizeof name, "s%d", i);
-        GLint l = glGetUniformLocation(prog->id, name);
-        if (l >= 0) glUniform1i(l, i);
-    }
-    prog->valid = true;
-    return prog;
 }
 
 } // namespace dxwebgl2

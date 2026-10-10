@@ -6,8 +6,10 @@ the same terms.
 ## Ground rules
 
 * **Emscripten only.** The build refuses to configure with another toolchain.
-* **Keep the layers** ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): API independent WebGL2 code goes into `src/core`
-  (no `IDirect3D*` types there), API specific objects into `src/d3d8`. `tools/check_layering.py` enforces it.
+* **Keep the layers** ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): API independent code goes into `src/core`
+  (no `IDirect3D*` types there), API specific objects into `src/d3d8`, and every WebGL call into the WebGL2 backend
+  (`src/core/gl`): the front end and the rest of the core reach the GPU through `core/backend.h` only
+  ([docs/WEBGPU.md](docs/WEBGPU.md)). `tools/check_layering.py` enforces it.
 * **Do not add Microsoft SDK headers or code**, not even excerpts (`d3d8.h` of the DirectX SDK, `min-dx8-sdk`, sample
   code). Write from the public documentation and compare behavior with `tools/check_header_compat.py`
   if you have a legitimate copy of the SDK.
@@ -33,7 +35,7 @@ Tests, by directory:
 | `tests/unit/test_d3dx_math.cpp` | D3DX math, matrix stack | node |
 | `tests/unit/test_wide_strings.cpp` | `W` entry points with 16- and 32-bit `wchar_t` | node |
 | `tests/integration/` | a project with its own `windows.h` | node |
-| `tests/runtime/d3d8_runtime_test.cpp` | API checks and rendering scenes, probes compared with `expected_probes.inc` | headless Chromium |
+| `tests/runtime/d3d8_runtime_test.cpp` | API checks and rendering scenes, probes compared with `expected_probes.inc`; prints the WebGL call counts per category (`STATS` lines) | headless Chromium |
 | `tests/runtime/d3d8_features_test.cpp` | feature scenes with checked pixels: border colours, provoking vertex, ps.1.x instructions, D3DX filters, state caching, diagnostics, context loss, multisampling (`tests/runner/run_features.mjs`, 7 modes) | headless Chromium |
 | `tests/runner/run_regression.mjs` | frame hashes of the runtime test scenes against `tests/runner/reference_hashes.json` (`--update` after an intended rendering change; review the pictures first) | headless Chromium |
 | `examples/` | each example is run for 40 frames and its pixels checked | headless Chromium |

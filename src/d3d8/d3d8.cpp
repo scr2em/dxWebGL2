@@ -41,7 +41,7 @@ static std::string &RendererString()
 
 void SetRendererString(const std::string &s) { RendererString() = s; }
 
-void FillDeviceCaps(D3DCAPS8 *c, const GLCaps *gl)
+void FillDeviceCaps(D3DCAPS8 *c, const GpuCaps *gl)
 {
     memset(c, 0, sizeof *c);
     c->DeviceType = D3DDEVTYPE_HAL;
@@ -89,9 +89,9 @@ void FillDeviceCaps(D3DCAPS8 *c, const GLCaps *gl)
     c->TextureAddressCaps = addr;
     c->VolumeTextureAddressCaps = addr;
     c->LineCaps = D3DLINECAPS_TEXTURE | D3DLINECAPS_ZTEST | D3DLINECAPS_BLEND | D3DLINECAPS_ALPHACMP | D3DLINECAPS_FOG;
-    GLint maxTex = gl ? Min<GLint>(gl->maxTextureSize, 4096) : 4096;
+    int maxTex = gl ? Min<int>(gl->maxTextureSize, 4096) : 4096;
     c->MaxTextureWidth = c->MaxTextureHeight = maxTex;
-    c->MaxVolumeExtent = gl ? Min<GLint>(gl->max3DSize, 256) : 256;
+    c->MaxVolumeExtent = gl ? Min<int>(gl->max3DSize, 256) : 256;
     c->MaxTextureRepeat = 8192;
     c->MaxTextureAspectRatio = 0;
     c->MaxAnisotropy = gl ? (DWORD)Max(1.0f, gl->maxAnisotropy) : 16;

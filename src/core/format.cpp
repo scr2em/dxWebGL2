@@ -10,6 +10,9 @@
  */
 #include "core/format.h"
 
+// Only for the GL enum values of the table (the WebGL2 storage columns); nothing here calls GL.
+#include <GLES3/gl3.h>
+
 namespace dxwebgl2 {
 
 #ifndef GL_COMPRESSED_RGB_S3TC_DXT1_EXT
@@ -538,17 +541,6 @@ const uint8_t *PrepareForGL(const FormatInfo &info, const uint8_t *src, uint32_t
         }
     }
     return scratch.data();
-}
-
-GLenum DepthRenderbufferFormat(D3DFORMAT format)
-{
-    switch (format)
-    {
-    case D3DFMT_D16: case D3DFMT_D16_LOCKABLE: return GL_DEPTH_COMPONENT16;
-    case D3DFMT_D32: case D3DFMT_D24X8: return GL_DEPTH_COMPONENT24;
-    case D3DFMT_D24S8: case D3DFMT_D24X4S4: case D3DFMT_D15S1: return GL_DEPTH24_STENCIL8;
-    default: return GL_DEPTH24_STENCIL8;
-    }
 }
 
 } // namespace dxwebgl2

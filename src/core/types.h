@@ -6,8 +6,8 @@
  * See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
  */
 /*
- * Types shared by the core and the Direct3D front ends: limits, GL capabilities, vertex layouts and
- * the GL pipeline state.
+ * Types shared by the core and the Direct3D front ends: limits, uniform groups and vertex layouts. What the front
+ * ends exchange with a backend (pipeline state, draws, GPU objects) is in core/backend.h.
  */
 #pragma once
 
@@ -17,7 +17,6 @@
 
 namespace dxwebgl2 {
 
-class GLState;
 class Program;
 class VertexShaderObject;
 class PixelShaderObject;
@@ -32,26 +31,6 @@ enum
     PS_CONSTANTS = 32,
     RS_COUNT = 256,
     TSS_COUNT = 33,
-    UPLOAD_UNIT = 8, ///< texture unit used for resource uploads (stages use 0..7)
-};
-
-/// Base of everything that owns WebGL objects. The GL state keeps a list of them so that, when the
-/// WebGL context is lost and a new one is created, every buffer, texture and renderbuffer can be
-/// recreated from its system memory copy.
-class GLObject
-{
-public:
-    explicit GLObject(GLState *state);
-    virtual ~GLObject();
-    /// The context is gone: forget the GL names (the objects are invalid).
-    virtual void OnContextLost() {}
-    /// A new context is current: create the GL objects again and re-upload what is known.
-    virtual void OnContextRestored() = 0;
-
-private:
-    friend class GLState;
-    GLState *m_glDevice;
-    GLObject *m_glPrev = nullptr, *m_glNext = nullptr;
 };
 
 /// Groups of uniforms that change together. The device keeps one version counter per group and
@@ -78,28 +57,6 @@ enum UniformGroup
     G_COUNT
 };
 
-/// Capabilities of the GL implementation.
-struct GLCaps
-{
-    GLint maxTextureSize = 2048;
-    GLint maxCubeSize = 2048;
-    GLint max3DSize = 256;
-    GLint maxVertexAttribs = 16;
-    GLint maxVertexUniformVectors = 256;
-    GLint maxTextureUnits = 16;
-    float maxAnisotropy = 1.0f;
-    float maxPointSize = 1.0f;
-    GLint maxSamples = 1;
-    GLint uniformAlignment = 256;
-    bool s3tc = false;
-    bool anisotropic = false;
-    bool provokingVertex = false;   ///< WEBGL_provoking_vertex
-    bool baseVertex = false;        ///< WEBGL_draw_instanced_base_vertex_base_instance
-    std::string renderer = "WebGL2";
-    std::string vendor = "WebGL";
-    std::string version;
-};
-
 //------------------------------------------------------------------------------
 // Vertex declarations
 //------------------------------------------------------------------------------
@@ -109,7 +66,7 @@ struct VertexElement
     uint8_t stream;
     uint16_t offset;
     uint8_t size;        ///< components
-    uint8_t glType;      ///< 0 = float, 1 = ubyte, 2 = short
+    uint8_t glType;      ///< component type: 0 = float, 1 = ubyte, 2 = short
     uint8_t normalized;
     uint8_t d3dColor;    ///< D3DCOLOR: swizzled to RGBA by the vertex shader
 };
@@ -127,20 +84,5 @@ const VertexLayout *LayoutFromFVF(DWORD fvf);
 UINT FVFVertexSize(DWORD fvf);
 /// Process-wide unique id of a vertex layout (layouts are compared by id in program keys).
 uint32_t NextVertexLayoutId();
-
-/// The GL pipeline state derived from the D3D render states.
-struct PipelineState
-{
-    bool blend, depthTest, depthMask, cull, stencilTest, scissor, polyOffset;
-    GLenum srcBlend, dstBlend, blendOp, depthFunc, frontFace, stencilFunc, stencilFail, stencilZFail, stencilPass;
-    GLint stencilRef;
-    GLuint stencilMask, stencilWriteMask;
-    uint8_t colorMask; // bits r,g,b,a
-    float depthNear, depthFar;
-    float polyFactor, polyUnits;
-    GLint vp[4];
-    GLint sc[4];
-    void Invalidate();
-};
 
 } // namespace dxwebgl2

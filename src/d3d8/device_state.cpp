@@ -157,9 +157,7 @@ void Device::ResetState()
     m_keyDirty = true;
     m_derivedDirty = true;
     DirtyAllUniforms();
-    m_pipelineValid = false;
-    m_targetsDirty = true;
-    m_attribSig = 0;
+    m_backend->InvalidateState();
     for (int i = 0; i < MAX_STAGES; ++i) m_texLodSet[i] = 0;
 }
 
@@ -464,7 +462,7 @@ HRESULT Device::ApplyStateBlock(DWORD token)
     m_derivedDirty = true;
     m_samplerDirtyMask = 0xFF;
     DirtyAllUniforms();
-    m_attribSig = 0;
+    m_backend->InvalidateVertexInput();
     return D3D_OK;
 }
 
@@ -491,7 +489,7 @@ HRESULT Device::SetStreamSource(UINT stream, IDirect3DVertexBuffer8 *vb, UINT st
     if (stream >= MAX_STREAMS) return D3DERR_INVALIDCALL;
     m_s.streams[stream].vb = vb;
     m_s.streams[stream].stride = stride;
-    m_attribSig = 0;
+    m_backend->InvalidateVertexInput();
     return D3D_OK;
 }
 
@@ -570,7 +568,7 @@ HRESULT Device::SetVertexShader(DWORD handle)
     if ((handle & 1) && !FindVertexShader(handle)) return D3DERR_INVALIDCALL;
     m_s.vertexShader = handle;
     m_keyDirty = true;
-    m_attribSig = 0;
+    m_backend->InvalidateVertexInput();
     if (VertexShaderObject *vs = FindVertexShader(handle))
     {
         // `def` and D3DVSD_CONST constants are loaded into the register file when the shader is set.
@@ -598,7 +596,7 @@ HRESULT Device::DeleteVertexShader(DWORD handle)
         if (p->second->key.vsHandle == handle)
         {
             if (m_curProgram == p->second) m_curProgram = nullptr;
-            delete p->second;
+            m_backend->DestroyProgram(p->second);
             p = m_programs.erase(p);
         }
         else ++p;
@@ -683,7 +681,7 @@ HRESULT Device::DeletePixelShader(DWORD handle)
         if (p->second->key.psHandle == handle)
         {
             if (m_curProgram == p->second) m_curProgram = nullptr;
-            delete p->second;
+            m_backend->DestroyProgram(p->second);
             p = m_programs.erase(p);
         }
         else ++p;

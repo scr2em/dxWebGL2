@@ -1046,6 +1046,8 @@ static void RenderFrame(float t, IDirect3DTexture8 *checker, IDirect3DTexture8 *
 //------------------------------------------------------------------------------
 static void CheckAdapterAndCaps(bool shaders)
 {
+    // Whatever was requested, the device renders through WebGL2 until the WebGPU backend exists (docs/WEBGPU.md).
+    EXPECT(dxwebgl2_GetBackend() == DXWEBGL2_BACKEND_WEBGL2);
     EXPECT(g_d3d->GetAdapterCount() == 1);
     D3DADAPTER_IDENTIFIER8 aid;
     EXPECT_HR(g_d3d->GetAdapterIdentifier(0, 0, &aid), D3D_OK);
@@ -1532,6 +1534,10 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--debug")) dxwebgl2_SetDebug(1);
         if (!strcmp(argv[i], "--scene2")) g_scene2 = true;
         if (!strcmp(argv[i], "--scene3")) g_scene3 = true;
+        // The GPU API to render through (dxwebgl2_SetBackend); WebGPU is not implemented yet and falls back to WebGL2.
+        if (!strcmp(argv[i], "--backend=webgl2")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGL2);
+        if (!strcmp(argv[i], "--backend=webgpu")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGPU);
+        if (!strcmp(argv[i], "--backend=auto")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_AUTO);
     }
     (void)blocking;
     if (g_shaders) g_mode = "shaders";
@@ -1603,6 +1609,9 @@ int main(int argc, char **argv)
     int kFrames = 90;
     for (int i = 1; i < argc; ++i)
         if (!strncmp(argv[i], "--frames=", 9)) kFrames = atoi(argv[i] + 9);
+    // WebGL call counts over the run (summed per frame from dxwebgl2_GetStats), printed as STATS lines: they show whether a
+    // change to the draw path adds calls (compare the lines of two builds; they do not depend on timing).
+    dxwebgl2_Stats total = {}, st = {};
     for (int f = 0; f < kFrames; ++f)
     {
         if (doReset && f == 40)
@@ -1616,6 +1625,10 @@ int main(int argc, char **argv)
             g_dev->GetDepthStencilSurface(&bbDepth);
         }
         RenderFrame(f * 0.02f, checker, gradient, dxt, rtTex, rtDepth, bb, bbDepth, true);
+        dxwebgl2_GetStats(&st);
+        total.draws += st.draws; total.glCalls += st.glCalls; total.glDraw += st.glDraw; total.glState += st.glState;
+        total.glBind += st.glBind; total.glUniform += st.glUniform; total.glUpload += st.glUpload; total.glAttrib += st.glAttrib;
+        total.glOther += st.glOther; total.glSync += st.glSync; total.uploadBytes += st.uploadBytes;
         if (f == 0 || f == kFrames - 1)
         {
             ReadBack();
@@ -1623,6 +1636,12 @@ int main(int argc, char **argv)
         }
         usleep(16000);
     }
+    auto printStats = [](const char *what, const dxwebgl2_Stats &s) {
+        printf("STATS %s: %u draws, %u WebGL calls (draw %u, state %u, bind %u, uniform %u, upload %u, attrib %u, other %u, sync %u), %u bytes uploaded\n",
+               what, s.draws, s.glCalls, s.glDraw, s.glState, s.glBind, s.glUniform, s.glUpload, s.glAttrib, s.glOther, s.glSync, s.uploadBytes);
+    };
+    printStats("last frame", st);
+    printStats("all frames", total);
 
     // Probes (frame kFrames-1 contents).
     Probe("clear-bg", 5, 235);

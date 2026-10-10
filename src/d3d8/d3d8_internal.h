@@ -15,7 +15,7 @@
 namespace dxwebgl2 {
 
 /// Fills D3DCAPS8; `gl` may be null before a context exists.
-void FillDeviceCaps(D3DCAPS8 *caps, const GLCaps *gl);
+void FillDeviceCaps(D3DCAPS8 *caps, const GpuCaps *gl);
 void SetRendererString(const std::string &s);
 IDirect3D8 *CreateDirect3D8();
 

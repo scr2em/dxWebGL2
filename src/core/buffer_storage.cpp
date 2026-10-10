@@ -6,36 +6,40 @@
  * See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
  */
 /*
- * CPU-shadowed GL buffer storage: Lock() writes into a system-memory copy, the modified range is
- * pushed to the GL buffer lazily, right before a draw call reads from it, so several locks between
+ * CPU-shadowed GPU buffer storage: Lock() writes into a system-memory copy, the modified range is
+ * pushed to the GPU buffer lazily, right before a draw call reads from it, so several locks between
  * two draws cost a single upload.
  */
 #include "core/buffer_storage.h"
-#include "core/gl_state.h"
 
 namespace dxwebgl2 {
 
-BufferStorage::BufferStorage(GLState *dev, GLenum target, UINT size, DWORD usage)
-    : GLObject(dev), m_dev(dev), m_target(target), m_data(size, 0), m_usage(usage)
+BufferStorage::BufferStorage(Backend *backend, BufferKind kind, UINT size, DWORD usage)
+    : GpuObject(backend), m_backend(backend), m_kind(kind), m_data(size, 0), m_usage(usage)
 {
-    glGenBuffers(1, &m_buf);
+    m_buf = m_backend->CreateBuffer(m_kind, size);
+}
+
+void BufferStorage::OnContextLost()
+{
+    // The backend object died with the context: free the handle (no GPU call).
+    if (m_buf) m_backend->DestroyBuffer(m_buf);
+    m_buf = nullptr;
+    m_allocated = false;
 }
 
 void BufferStorage::OnContextRestored()
 {
     // The system memory copy is authoritative: the whole buffer is uploaded again by the next Flush().
-    glGenBuffers(1, &m_buf);
+    if (m_buf) m_backend->DestroyBuffer(m_buf);
+    m_buf = m_backend->CreateBuffer(m_kind, (uint32_t)m_data.size());
     m_allocated = false;
     m_dirtyBegin = m_dirtyEnd = 0;
 }
 
 BufferStorage::~BufferStorage()
 {
-    if (m_buf)
-    {
-        m_dev->ForgetBuffer(m_buf);
-        glDeleteBuffers(1, &m_buf);
-    }
+    if (m_buf) m_backend->DestroyBuffer(m_buf);
 }
 
 HRESULT BufferStorage::Lock(UINT offset, UINT size, BYTE **ppData, DWORD flags)
@@ -64,22 +68,17 @@ HRESULT BufferStorage::Unlock()
     return D3D_OK;
 }
 
-GLuint BufferStorage::Flush()
+GpuBuffer *BufferStorage::Flush()
 {
     if (!m_allocated)
     {
-        // WebGL fixes a buffer's role on first use: index buffers may only ever
-        // be bound to ELEMENT_ARRAY_BUFFER, vertex buffers to ARRAY_BUFFER, so
-        // uploads go through the buffer's own target.
-        m_dev->BindBuffer(m_target, m_buf);
-        glBufferData(m_target, (GLsizeiptr)m_data.size(), m_data.data(), GL_DYNAMIC_DRAW);
+        m_backend->WriteBuffer(m_buf, 0, (uint32_t)m_data.size(), m_data.data(), true);
         m_allocated = true;
         m_dirtyBegin = m_dirtyEnd = 0;
     }
     else if (m_dirtyBegin != m_dirtyEnd)
     {
-        m_dev->BindBuffer(m_target, m_buf);
-        glBufferSubData(m_target, m_dirtyBegin, m_dirtyEnd - m_dirtyBegin, m_data.data() + m_dirtyBegin);
+        m_backend->WriteBuffer(m_buf, m_dirtyBegin, m_dirtyEnd - m_dirtyBegin, m_data.data() + m_dirtyBegin, false);
         m_dirtyBegin = m_dirtyEnd = 0;
     }
     return m_buf;

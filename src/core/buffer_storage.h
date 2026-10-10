@@ -6,36 +6,35 @@
  * See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
  */
 /*
- * CPU-shadowed GL buffer storage used by vertex and index buffers.
+ * CPU-shadowed GPU buffer storage used by vertex and index buffers.
  */
 #pragma once
 
-#include "core/types.h"
+#include "core/backend.h"
 
 namespace dxwebgl2 {
 
-class GLState;
-
-/// Shared CPU-shadow + GL buffer logic of vertex and index buffers.
-class BufferStorage : public GLObject
+/// Shared CPU-shadow + GPU buffer logic of vertex and index buffers.
+class BufferStorage : public GpuObject
 {
 public:
-    BufferStorage(GLState *dev, GLenum target, UINT size, DWORD usage);
+    BufferStorage(Backend *backend, BufferKind kind, UINT size, DWORD usage);
     ~BufferStorage() override;
-    void OnContextLost() override { m_buf = 0; m_allocated = false; }
+    void OnContextLost() override;
     void OnContextRestored() override;
     HRESULT Lock(UINT offset, UINT size, BYTE **ppData, DWORD flags);
     HRESULT Unlock();
-    /// Uploads the pending dirty range to the GL buffer. Returns the GL buffer.
-    GLuint Flush();
-    GLuint Id() const { return m_buf; }
+    /// Uploads the pending dirty range to the GPU buffer. Returns the GPU buffer (null while the context is lost).
+    GpuBuffer *Flush();
+    GpuBuffer *Gpu() const { return m_buf; }
+    BufferKind Kind() const { return m_kind; }
     UINT Size() const { return (UINT)m_data.size(); }
     const uint8_t *Data() const { return m_data.data(); }
 
 private:
-    GLState *m_dev;
-    GLenum m_target;
-    GLuint m_buf = 0;
+    Backend *m_backend;
+    BufferKind m_kind;
+    GpuBuffer *m_buf = nullptr;
     std::vector<uint8_t> m_data;
     [[maybe_unused]] DWORD m_usage;
     bool m_locked = false;

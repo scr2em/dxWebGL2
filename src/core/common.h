@@ -6,17 +6,11 @@
  * See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
  */
 /*
- * Common definitions of the Direct3D 8 on WebGL2 library.
+ * Common definitions of the library (no GPU API in here: the WebGL2 headers are only included by src/core/gl).
  */
 #pragma once
 
 #include "core/api_types.h"
-
-#include <GLES3/gl3.h>
-#include <GLES2/gl2ext.h>
-// Declarations of the WebGL extension entry points (before glcount.h turns GL calls into macros).
-#include <webgl/webgl2_ext.h>
-#include <emscripten/html5_webgl.h>
 
 #include <algorithm>
 #include <cmath>
@@ -30,7 +24,6 @@
 #include <vector>
 
 #include "dxwebgl2/dxwebgl2.h"
-#include "core/glcount.h"
 
 namespace dxwebgl2 {
 
@@ -45,6 +38,8 @@ struct Config
     unsigned vsVersion = 0;
     unsigned psVersion = 0;
     int presentMode = DXWEBGL2_PRESENT_EXPLICIT;
+    int backend = DXWEBGL2_BACKEND_AUTO;        ///< dxwebgl2_SetBackend
+    int activeBackend = DXWEBGL2_BACKEND_AUTO;  ///< backend of the device created last (dxwebgl2_GetBackend)
     dxwebgl2_PlatformHooks hooks = {};
     bool debug = false;
     int debugForce = 0;	// diagnosis: 1 = no culling, 2 = no blending, 4 = no depth test, for every draw

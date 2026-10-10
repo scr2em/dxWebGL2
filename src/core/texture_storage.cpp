@@ -6,10 +6,10 @@
  * See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
  */
 /*
- * GL texture storage with CPU shadow copies: allocation, level locking, upload and read-back.
+ * GPU texture storage with CPU shadow copies: allocation, level locking, upload and read-back; standalone render
+ * target and depth/stencil storage.
  */
 #include "core/texture_storage.h"
-#include "core/gl_state.h"
 
 namespace dxwebgl2 {
 
@@ -22,27 +22,27 @@ uint32_t NextResourceId()
 //------------------------------------------------------------------------------
 // TextureBase
 //------------------------------------------------------------------------------
-TextureBase::TextureBase(GLState *dev, D3DRESOURCETYPE type, UINT w, UINT h, UINT d, UINT levels,
+TextureBase::TextureBase(Backend *backend, D3DRESOURCETYPE type, UINT w, UINT h, UINT d, UINT levels,
                          DWORD usage, D3DFORMAT fmt, D3DPOOL pool)
-    : GLObject(dev), m_dev(dev), m_type(type), m_format(fmt), m_usage(usage), m_pool(pool),
+    : GpuObject(backend), m_backend(backend), m_type(type), m_format(fmt), m_usage(usage), m_pool(pool),
       m_width(w), m_height(h), m_depth(d), m_uniqueId(NextResourceId())
 {
     m_info = GetFormatInfo(fmt);
     if (!m_info || !m_info->texture || w == 0 || h == 0 || d == 0) return;
-    if (type == D3DRTYPE_CUBETEXTURE) { m_faces = 6; m_target = GL_TEXTURE_CUBE_MAP; }
-    else if (type == D3DRTYPE_VOLUMETEXTURE) { m_faces = 1; m_target = GL_TEXTURE_3D; }
-    else { m_faces = 1; m_target = GL_TEXTURE_2D; }
+    if (type == D3DRTYPE_CUBETEXTURE) { m_faces = 6; m_kind = TextureKind::Cube; }
+    else if (type == D3DRTYPE_VOLUMETEXTURE) { m_faces = 1; m_kind = TextureKind::Volume; }
+    else { m_faces = 1; m_kind = TextureKind::Tex2D; }
     if (type == D3DRTYPE_CUBETEXTURE) m_height = m_width;
 
-    const GLCaps &caps = dev->Caps();
-    GLint maxSize = (type == D3DRTYPE_CUBETEXTURE) ? caps.maxCubeSize : (type == D3DRTYPE_VOLUMETEXTURE ? caps.max3DSize : caps.maxTextureSize);
-    if ((GLint)m_width > maxSize || (GLint)m_height > maxSize || (GLint)m_depth > caps.max3DSize) return;
+    const GpuCaps &caps = backend->Caps();
+    int maxSize = (type == D3DRTYPE_CUBETEXTURE) ? caps.maxCubeSize : (type == D3DRTYPE_VOLUMETEXTURE ? caps.max3DSize : caps.maxTextureSize);
+    if ((int)m_width > maxSize || (int)m_height > maxSize || (int)m_depth > caps.max3DSize) return;
 
     uint32_t full = FullMipCount(m_width, m_height, m_depth);
     m_levelCount = (levels == 0 || levels > full) ? full : levels;
     m_isRT = (usage & D3DUSAGE_RENDERTARGET) != 0;
     if (m_isRT && !m_info->renderTarget) return;
-    m_decode = m_info->conv == UploadConv::DXT && dev->IsDecodingDXT();
+    m_decode = m_info->conv == UploadConv::DXT && !caps.s3tc;
 
     m_levels.resize(m_faces * m_levelCount);
     for (uint32_t f = 0; f < m_faces; ++f)
@@ -58,25 +58,33 @@ TextureBase::TextureBase(GLState *dev, D3DRESOURCETYPE type, UINT w, UINT h, UIN
         }
     m_valid = true;
     if (pool != D3DPOOL_SYSTEMMEM && pool != D3DPOOL_SCRATCH)
-        m_valid = EnsureGL();
+        m_valid = EnsureGpu();
 }
 
 TextureBase::~TextureBase()
 {
-    ReleaseGL();
+    ReleaseGpu();
+}
+
+void TextureBase::OnContextLost()
+{
+    // The backend object died with the context: free the handle (no GPU call). m_glAllocated stays: the texture had
+    // GPU storage and gets it again on restore.
+    if (m_gpu) m_backend->DestroyTexture(m_gpu);
+    m_gpu = nullptr;
 }
 
 void TextureBase::OnContextRestored()
 {
-    // Textures that never had a GL object (system memory) stay without one. The others are created
+    // Textures that never had a GPU object (system memory) stay without one. The others are created
     // again and refilled from the shadow copies; levels whose copy was released (DEFAULT pool, see
     // UnlockLevel) come back empty, exactly like Direct3D 8 resources in the default pool.
     const bool had = m_glAllocated;
-    m_tex = 0;
+    if (m_gpu) m_backend->DestroyTexture(m_gpu); // created while the context was lost
+    m_gpu = nullptr;
     m_glAllocated = false;
-    m_baseLevel = 0;
     if (!had) return;
-    EnsureGL();
+    EnsureGpu();
     for (LevelData &lv : m_levels)
         if (!lv.shadowValid && lv.glValid && !m_isRT)
         {
@@ -85,49 +93,24 @@ void TextureBase::OnContextRestored()
         }
 }
 
-void TextureBase::ReleaseGL()
+void TextureBase::ReleaseGpu()
 {
-    if (m_tex)
+    if (m_gpu)
     {
-        m_dev->ForgetTexture(m_tex);
-        glDeleteTextures(1, &m_tex);
-        m_tex = 0;
+        m_backend->DestroyTexture(m_gpu);
+        m_gpu = nullptr;
     }
 }
 
-GLenum TextureBase::FaceTarget(UINT face) const
+bool TextureBase::EnsureGpu()
 {
-    return m_target == GL_TEXTURE_CUBE_MAP ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + face : m_target;
-}
-
-bool TextureBase::EnsureGL()
-{
-    if (m_tex) return true;
+    if (m_gpu) return true;
     if (!m_info) return false;
-    glGenTextures(1, &m_tex);
-    m_dev->BindForUpload(m_target, m_tex);
-
-    const GLenum internal = m_decode ? GL_RGBA8 : m_info->glInternal;
-    const bool legacy = internal == GL_ALPHA || internal == GL_LUMINANCE || internal == GL_LUMINANCE_ALPHA;
-    if (!legacy)
-    {
-        if (m_target == GL_TEXTURE_3D)
-            glTexStorage3D(m_target, m_levelCount, internal, m_width, m_height, m_depth);
-        else
-            glTexStorage2D(m_target, m_levelCount, internal, m_width, m_height);
-    }
-    else
-    {
-        for (uint32_t f = 0; f < m_faces; ++f)
-            for (uint32_t l = 0; l < m_levelCount; ++l)
-                glTexImage2D(FaceTarget(f), l, internal, LevelWidth(l), LevelHeight(l), 0, m_info->glFormat, m_info->glType, nullptr);
-    }
-    glTexParameteri(m_target, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(m_target, GL_TEXTURE_MAX_LEVEL, (GLint)m_levelCount - 1);
-    m_baseLevel = 0;
+    const TextureDesc desc = {m_kind, m_format, m_width, m_height, m_depth, m_levelCount, m_decode};
+    m_gpu = m_backend->CreateTexture(desc);
     m_glAllocated = true;
 
-    // Contents written while there was no GL texture (system memory pool).
+    // Contents written while there was no GPU texture (system memory pool).
     for (uint32_t f = 0; f < m_faces; ++f)
         for (uint32_t l = 0; l < m_levelCount; ++l)
             if (LevelAt(f, l).shadowValid) UploadRegion(f, l, nullptr, nullptr);
@@ -147,14 +130,14 @@ bool TextureBase::ReadbackLevel(UINT face, UINT level)
 {
     LevelData &lv = LevelAt(face, level);
     AllocateShadow(lv);
-    if (!m_tex || m_target == GL_TEXTURE_3D || m_info->blockBytes)
+    if (!m_gpu || m_kind == TextureKind::Volume || m_info->blockBytes)
     {
         lv.shadowValid = true;
         return false;
     }
     std::vector<uint8_t> rgba((size_t)lv.width * lv.height * 4);
     RECT rc = {0, 0, (LONG)lv.width, (LONG)lv.height};
-    if (!m_dev->ReadTextureLevel(m_tex, m_target, FaceTarget(face), level, lv.width, lv.height, rc, rgba.data()))
+    if (!m_backend->ReadTexture(m_gpu, face, level, rc, rgba.data()))
     {
         lv.shadowValid = true;
         return false;
@@ -240,7 +223,7 @@ HRESULT TextureBase::UnlockLevel(UINT face, UINT level)
     const bool full = lv.lockRect.left == 0 && lv.lockRect.top == 0 &&
                       (uint32_t)lv.lockRect.right == lv.width && (uint32_t)lv.lockRect.bottom == lv.height;
     const bool keepDefault = (m_usage & (D3DUSAGE_DYNAMIC | D3DUSAGE_RENDERTARGET)) != 0;
-    if (m_tex && !m_info->blockBytes &&
+    if (m_gpu && !m_info->blockBytes &&
         ((m_pool == D3DPOOL_DEFAULT && !keepDefault) || (m_pool == D3DPOOL_MANAGED && GetConfig().releaseTextureShadows)) &&
         (full || m_type == D3DRTYPE_VOLUMETEXTURE))
     {
@@ -254,22 +237,14 @@ void TextureBase::UploadRegion(UINT face, UINT level, const RECT *rcIn, const D3
 {
     LevelData &lv = LevelAt(face, level);
     lv.shadowValid = true;
-    if (!m_tex) return; // system memory textures are not on the GPU
+    if (!m_gpu) return; // system memory textures are not on the GPU
     lv.glValid = true;
 
-    m_dev->BindForUpload(m_target, m_tex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-    if (m_target == GL_TEXTURE_3D)
+    if (m_kind == TextureKind::Volume)
     {
-        const uint8_t *data = PrepareForGL(*m_info, lv.shadow.data(), lv.pitch, lv.width, lv.height * lv.depth, m_decode, m_scratch);
-        const GLenum fmt = m_decode ? GL_RGBA : m_info->glFormat;
-        const GLenum type = m_decode ? GL_UNSIGNED_BYTE : m_info->glType;
-        if (m_info->blockBytes && !m_decode)
-            glCompressedTexSubImage3D(m_target, level, 0, 0, 0, lv.width, lv.height, lv.depth, m_info->glInternal,
-                                      (GLsizei)(lv.slicePitch * lv.depth), data);
-        else
-            glTexSubImage3D(m_target, level, 0, 0, 0, lv.width, lv.height, lv.depth, fmt, type, data);
+        // Volumes are uploaded level by level.
+        const TextureRegion region = {face, level, 0, 0, lv.width, lv.height, lv.depth};
+        m_backend->WriteTexture(m_gpu, region, lv.shadow.data(), lv.pitch);
         return;
     }
 
@@ -290,30 +265,19 @@ void TextureBase::UploadRegion(UINT face, UINT level, const RECT *rcIn, const D3
         src = lv.shadow.data() + (size_t)(rc.top / 4) * lv.pitch + (size_t)(rc.left / 4) * m_info->blockBytes;
     else
         src = lv.shadow.data() + (size_t)rc.top * lv.pitch + (size_t)rc.left * (m_info->bits / 8);
-
-    const uint8_t *data = PrepareForGL(*m_info, src, lv.pitch, w, h, m_decode, m_scratch);
-    if (m_info->blockBytes && !m_decode)
-    {
-        uint32_t size = ((w + 3) / 4) * ((h + 3) / 4) * m_info->blockBytes;
-        glCompressedTexSubImage2D(FaceTarget(face), level, rc.left, rc.top, w, h, m_info->glInternal, size, data);
-    }
-    else
-    {
-        const GLenum fmt = m_decode ? GL_RGBA : m_info->glFormat;
-        const GLenum type = m_decode ? GL_UNSIGNED_BYTE : m_info->glType;
-        glTexSubImage2D(FaceTarget(face), level, rc.left, rc.top, w, h, fmt, type, data);
-    }
+    const TextureRegion region = {face, level, (uint32_t)rc.left, (uint32_t)rc.top, w, h, 1};
+    m_backend->WriteTexture(m_gpu, region, src, lv.pitch);
 }
 
 void TextureBase::UploadWhole(UINT face, UINT level)
 {
-    if (m_target == GL_TEXTURE_3D) { D3DBOX b = {}; UploadRegion(face, level, nullptr, &b); }
+    if (m_kind == TextureKind::Volume) { D3DBOX b = {}; UploadRegion(face, level, nullptr, &b); }
     else UploadRegion(face, level, nullptr, nullptr);
 }
 
 bool TextureBase::WriteRect(UINT face, UINT level, const RECT &rc, const void *src, UINT srcPitch)
 {
-    if (!m_valid || face >= m_faces || level >= m_levelCount || m_target == GL_TEXTURE_3D) return false;
+    if (!m_valid || face >= m_faces || level >= m_levelCount || m_kind == TextureKind::Volume) return false;
     LevelData &lv = LevelAt(face, level);
     const bool full = rc.left == 0 && rc.top == 0 && (uint32_t)rc.right == lv.width && (uint32_t)rc.bottom == lv.height;
     AllocateShadow(lv);
@@ -344,7 +308,7 @@ bool TextureBase::WriteRect(UINT face, UINT level, const RECT &rc, const void *s
     UploadRegion(face, level, &r, nullptr);
 
     const bool keepDefault = (m_usage & (D3DUSAGE_DYNAMIC | D3DUSAGE_RENDERTARGET)) != 0;
-    if (m_tex && !m_info->blockBytes && full &&
+    if (m_gpu && !m_info->blockBytes && full &&
         ((m_pool == D3DPOOL_DEFAULT && !keepDefault) || (m_pool == D3DPOOL_MANAGED && GetConfig().releaseTextureShadows)))
     {
         std::vector<uint8_t>().swap(lv.shadow);
@@ -355,7 +319,7 @@ bool TextureBase::WriteRect(UINT face, UINT level, const RECT &rc, const void *s
 
 bool TextureBase::ReadRect(UINT face, UINT level, const RECT &rc, void *dst, UINT dstPitch)
 {
-    if (!m_valid || face >= m_faces || level >= m_levelCount || m_target == GL_TEXTURE_3D) return false;
+    if (!m_valid || face >= m_faces || level >= m_levelCount || m_kind == TextureKind::Volume) return false;
     LevelData &lv = LevelAt(face, level);
     AllocateShadow(lv);
     if (!lv.shadowValid)
@@ -381,6 +345,31 @@ bool TextureBase::ReadRect(UINT face, UINT level, const RECT &rc, void *dst, UIN
     uint8_t *d = static_cast<uint8_t *>(dst);
     for (uint32_t y = 0; y < rows; ++y) memcpy(d + (size_t)y * dstPitch, s + (size_t)y * lv.pitch, rowBytes);
     return true;
+}
+
+//------------------------------------------------------------------------------
+// SurfaceStorage
+//------------------------------------------------------------------------------
+SurfaceStorage::SurfaceStorage(Backend *backend, const SurfaceDesc &desc) : GpuObject(backend), m_backend(backend), m_desc(desc)
+{
+    m_gpu = m_backend->CreateSurface(m_desc);
+}
+
+SurfaceStorage::~SurfaceStorage()
+{
+    if (m_gpu) m_backend->DestroySurface(m_gpu);
+}
+
+void SurfaceStorage::OnContextLost()
+{
+    if (m_gpu) m_backend->DestroySurface(m_gpu); // no GPU call: the object died with the context
+    m_gpu = nullptr;
+}
+
+void SurfaceStorage::OnContextRestored()
+{
+    if (m_gpu) m_backend->DestroySurface(m_gpu);
+    m_gpu = m_backend->CreateSurface(m_desc);
 }
 
 } // namespace dxwebgl2

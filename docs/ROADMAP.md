@@ -20,7 +20,11 @@ renderers (SM2/SM3 shaders, vertex declarations, sampler states) can be compiled
   with `tools/check_header_compat.py` generalized to compare the D3D9 interfaces and values against a reference.
 * **Keys, not objects**: programs and pipeline state are described by plain structures (`ProgramKey`,
   `PipelineState`) that a front end fills; adding a second front end does not touch generated code.
-* **Resource storage independent of COM**: `BufferStorage`, `TextureBase` (`GLState` is their only dependency).
+* **Resource storage independent of COM**: `BufferStorage`, `TextureBase`, `SurfaceStorage` (the `Backend` interface is
+  their only dependency).
+* **The GPU work is behind `core/backend.h`**: context, back buffer, presentation, device loss, resources, programs and
+  the draw path (`Backend::Draw(DrawCall)`) are in the WebGL2 backend (`src/core/gl`); a front end only translates its
+  state (see [WEBGPU.md](WEBGPU.md), which uses the same seam for a WebGPU backend).
 * **Translators take token streams** and the shader emitters are isolated in `src/core/shader_*.cpp`.
 
 ## Differences to absorb
@@ -47,10 +51,10 @@ renderers (SM2/SM3 shaders, vertex declarations, sampler states) can be compiled
   `D3DVERTEXTEXTURESAMPLER0-3`. In Direct3D 9 the *combiner* half (`COLOROP`, `COLORARG*`, `ALPHAOP`, `TEXCOORDINDEX`,
   `TEXTURETRANSFORMFLAGS`, `RESULTARG`, `CONSTANT`, `BUMPENV*`) stays in `SetTextureStageState` for the fixed-function
   pipeline. The code already separates the two worlds: `StageKey` (combiner, part of the core's `ProgramKey`) and the
-  sampler object cache (`Device::SamplerFor`, keyed by a plain struct of filters, addresses and anisotropy; LOD bias and
-  border color are shader uniforms). The Direct3D 9 front end fills the same sampler key from `D3DSAMP_*`; the Direct3D 8
-  front end keeps deriving it from the texture stage states. Step 2 below moves the cache into the core, and
-  `core/types.h` gets a neutral `SamplerKey` and `DeviceState::samplers[20]`.
+  sampler objects (`SamplerDesc` in `core/backend.h`: filters, addresses and anisotropy in `D3DTEXF_*`/`D3DTADDRESS_*`
+  numbering, cached by the backend, `Backend::GetSampler`; LOD bias and border color are shader uniforms). The Direct3D 9
+  front end fills the same `SamplerDesc` from `D3DSAMP_*`; the Direct3D 8 front end keeps deriving it from the texture
+  stage states (`Device::SamplerFor`). The Direct3D 9 front end's state gets `samplers[20]`.
 * **Render states** are mostly additions: `D3DRS_DEPTHBIAS`/`SLOPESCALEDEPTHBIAS` (float, replaces `ZBIAS`) ->
   `glPolygonOffset`; `SCISSORTESTENABLE` + `SetScissorRect`; `BLENDFACTOR`, `SEPARATEALPHABLENDENABLE`,
   `SRCBLENDALPHA/DESTBLENDALPHA/BLENDOPALPHA` -> `glBlendFuncSeparate`/`glBlendEquationSeparate` (`PipelineState`
@@ -137,8 +141,8 @@ green, the runtime test renders identical frames):
 
 | Step | Content | Result |
 |---|---|---|
-| 1 | Move `CreateContext`, `QueryGLCaps`, the present program, the back buffer and the context-loss handling from `d3d8/device.cpp` into `core/gl_context.cpp` | `GLContext` (derived from `GLState`) owned by the front end device |
-| 2 | Introduce `core::DrawState`: a neutral description of one draw (pipeline state, bound textures + sampler keys, stream bindings, program key, uniform groups); move `ApplyPipeline`, `BindTextures`, `UploadUniforms`, `BindAttributes`, `UploadStream` and the draw into `core::DrawEngine::Draw(const DrawState&)` | the D3D8 device only translates its state into a `DrawState` |
+| 1 | **Done** (backend seam): `CreateContext`, `QueryGLCaps`, the present program, the back buffer and the context-loss handling moved from `d3d8/device.cpp` into the WebGL2 backend (`core/gl/gl_backend.cpp`) | `Backend` owned by the front end device |
+| 2 | **Done** (backend seam): `DrawCall` is the neutral description of one draw (pipeline state, bound textures + sampler handles, stream bindings, program, uniform versions and source); `ApplyPipeline`, `BindTextures`, `UploadUniforms`, `BindAttributes`, `UploadStream` and the draw are in `Backend::Draw(const DrawCall&)` (`core/gl/gl_draw.cpp`) | the D3D8 device only translates its state into a `DrawCall` |
 | 3 | Move `BuildProgramKey` to take a neutral `FixedFunctionState` (lighting, fog, stage combiners ...) | shared by both fixed-function front ends |
 | 4 | `ShaderIR` split, then the SM2/SM3 decoder (above) | pixel/vertex shaders 2.0-3.0 |
 | 5 | `src/d3d9` front end: `Direct3D9`, `Device9`, resources (the `Surface`/`Texture`/`Buffer` COM wrappers are mostly API shaped, copy and adapt), declarations, samplers, queries | a Direct3D 9 `d3d9_runtime_test` |
@@ -146,7 +150,7 @@ green, the runtime test renders identical frames):
 
 ## Milestones
 
-* **M1 (refactor)**: steps 1-3. No new API; all existing tests and the frame hashes unchanged.
+* **M1 (refactor)**: steps 1-3 (1 and 2 done with the backend seam). No new API; all existing tests and the frame hashes unchanged.
 * **M2 (SM IR)**: step 4 first half; SM1 through the IR with identical output GLSL (golden strings in tests).
 * **M3 (D3D9 fixed-function)**: `Direct3DCreate9`, device, resources, declarations, samplers, state; the D3D9 port of the runtime test
   (scenes A-D, fixed-function) passes; header compatibility check for D3D9 (`check_header_compat.py` with a D3D9 reference).

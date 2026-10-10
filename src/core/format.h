@@ -6,8 +6,8 @@
  * See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
  */
 /*
- * D3DFORMAT descriptions, mapping to GL storage and pixel
- * format conversion.
+ * D3DFORMAT descriptions, pixel format conversion, and the storage the WebGL2 backend uses for each format (the
+ * gl* columns; GL enum values, read by src/core/gl only).
  */
 #pragma once
 
@@ -15,7 +15,7 @@
 
 namespace dxwebgl2 {
 
-/// How the memory layout of a D3D format is turned into what GL can ingest.
+/// How the memory layout of a D3D format is turned into what the WebGL2 backend uploads.
 enum class UploadConv : uint8_t
 {
     None,          ///< Bytes are uploaded unchanged.
@@ -42,9 +42,10 @@ struct FormatInfo
     bool depth;          ///< depth/stencil format
     bool stencil;
     UploadConv conv;
-    GLenum glInternal;   ///< internal format (sized, or the unsized legacy one for A8/L8/A8L8)
-    GLenum glFormat;
-    GLenum glType;
+    // WebGL2 storage (GL enum values).
+    uint32_t glInternal; ///< internal format (sized, or the unsized legacy one for A8/L8/A8L8)
+    uint32_t glFormat;
+    uint32_t glType;
     uint8_t glBytes;     ///< bytes per pixel of the data handed to GL (uncompressed)
 };
 
@@ -86,8 +87,5 @@ bool ConvertPixels(D3DFORMAT srcFormat, const void *src, uint32_t srcPitch,
 /// For block compressed formats that must be decoded the result is RGBA8.
 const uint8_t *PrepareForGL(const FormatInfo &info, const uint8_t *src, uint32_t srcPitch,
                             uint32_t w, uint32_t h, bool decodeDxt, std::vector<uint8_t> &scratch);
-
-/// Renderbuffer storage format for a depth/stencil D3DFORMAT.
-GLenum DepthRenderbufferFormat(D3DFORMAT format);
 
 } // namespace dxwebgl2

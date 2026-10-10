@@ -86,7 +86,8 @@ endif()
 # ---------------------------------------------------------------------------------------------
 # The library
 # ---------------------------------------------------------------------------------------------
-file(GLOB DXWEBGL2_CORE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp)
+# src/core: the API-independent core; src/core/gl: the WebGL2 backend (see docs/ARCHITECTURE.md, docs/WEBGPU.md).
+file(GLOB DXWEBGL2_CORE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/core/gl/*.cpp)
 file(GLOB DXWEBGL2_D3D8_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/d3d8/*.cpp)
 set(DXWEBGL2_COMPAT_SOURCES "")
 if(DXWEBGL2_WEBD3D8_COMPAT)

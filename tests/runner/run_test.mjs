@@ -18,7 +18,9 @@
 // (no explicit swap control), --shaders (vs.1.1/ps.1.x scenes), --scene2 / --scene3 (texgen, projection, lights,
 // stencil, formats...), --reset, --debug (GL error checks), --frames=N (long run; two screenshots are compared
 // while it renders, which shows whether frames are presented from a thread that never yields), --yield
-// (emscripten_sleep(0) per frame through the OnFramePresented hook).
+// (emscripten_sleep(0) per frame through the OnFramePresented hook), --backend=webgl2|webgpu|auto
+// (dxwebgl2_SetBackend; WebGPU falls back to WebGL2 until it exists). The test prints STATS lines with the WebGL call
+// counts of the last frame and of the whole run.
 //
 // Needs the `playwright` npm package and Chromium, see browser.mjs. WebGL2 is provided by SwiftShader.
 import path from 'node:path';

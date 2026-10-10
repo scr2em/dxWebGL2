@@ -32,6 +32,21 @@ extern "C" {
 /// Version of the library as "major.minor.patch".
 const char *dxwebgl2_GetVersionString(void);
 
+/// GPU APIs the Direct3D device can render through.
+enum dxwebgl2_Backend {
+    /// The best one the browser offers: WebGPU when it is available, WebGL2 otherwise. This is the default. (Until the
+    /// WebGPU backend exists this selects WebGL2.)
+    DXWEBGL2_BACKEND_AUTO = 0,
+    DXWEBGL2_BACKEND_WEBGL2 = 1,
+    /// WebGPU (navigator.gpu). Not implemented yet: requesting it logs a message and uses WebGL2.
+    DXWEBGL2_BACKEND_WEBGPU = 2,
+};
+/// Selects the backend of the devices created from now on (one of dxwebgl2_Backend). Call before CreateDevice().
+void dxwebgl2_SetBackend(int backend);
+/// The backend the device created last renders through (DXWEBGL2_BACKEND_WEBGL2 or DXWEBGL2_BACKEND_WEBGPU), or
+/// DXWEBGL2_BACKEND_AUTO when no device was created yet.
+int dxwebgl2_GetBackend(void);
+
 /// Selects the canvas the WebGL2 context is created on, as a CSS selector
 /// ("#canvas" by default). When the device renders from a pthread, the canvas
 /// has to be an OffscreenCanvas transferred to that thread

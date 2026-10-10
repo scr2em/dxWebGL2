@@ -6,7 +6,9 @@
  * See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
  */
 /*
- * The IDirect3DDevice8 implementation on WebGL2.
+ * The IDirect3DDevice8 implementation. It translates the Direct3D 8 state into the neutral descriptions of
+ * core/backend.h (pipeline state, program keys, uniform groups, bindings) and renders through a Backend; it makes
+ * no GPU API call itself.
  *
  * Coordinate conventions used throughout (see also fixedfunction.cpp):
  *  - Everything is rendered "flipped": row 0 of every framebuffer attachment is
@@ -25,7 +27,7 @@
 #include "core/format.h"
 #include "api/com.h"
 #include "core/types.h"
-#include "core/gl_state.h"
+#include "core/backend.h"
 
 namespace dxwebgl2 {
 
@@ -79,27 +81,7 @@ struct DeviceState
     DeviceState();
 };
 
-/// Vertex array objects are cached by layout, buffers and strides (not by the base vertex, see
-/// Device::BindAttributes).
-enum { VAO_KEY_STREAMS = 4, VAO_CACHE_LIMIT = 384 };
-struct VaoKey
-{
-    uint32_t layout;
-    uint32_t pointerBase;
-    uint32_t buf[VAO_KEY_STREAMS];
-    uint16_t stride[VAO_KEY_STREAMS];
-    uint8_t stream[VAO_KEY_STREAMS];
-};
-struct VaoEntry
-{
-    VaoKey key;
-    GLuint vao = 0;
-    GLuint element = 0xFFFFFFFF; ///< element array buffer bound in this vertex array
-    uint32_t enabled = 0;
-    uint64_t lastUse = 0;
-};
-
-class Device final : public Unknown<IDirect3DDevice8>, public GLState
+class Device final : public Unknown<IDirect3DDevice8>, public UniformSource
 {
 public:
     static Device *Create(IDirect3D8 *d3d, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD behavior,
@@ -203,18 +185,19 @@ public:
     HRESULT STDMETHODCALLTYPE DeletePatch(UINT Handle) override;
 
     //-- Services for the resource classes ----------------------------------------
-    /// True while the WebGL context is lost (all GL calls are no-ops).
+    /// The backend the device renders through.
+    Backend *GetBackend() const { return m_backend; }
+    const GpuCaps &Caps() const { return m_backend->Caps(); }
+    /// True while the GPU context is lost (drawing is skipped).
     bool IsContextLost() const { return m_contextLost; }
     /// Polls the context state (cheap); sets the lost / needs-reset state. Returns true when usable.
     bool CheckContext();
     /// Sample count of the back buffer (0 = no multisampling).
     int BackBufferSamples() const { return m_samples; }
-    GLuint BackBufferRenderbuffer() const { return m_bbMsRb; }
-    /// Resolves the multisampled back buffer into BackBufferTexture() when it was drawn to.
-    void ResolveBackBuffer();
-    void MarkBackBufferDirty() { m_bbDirty = true; }
     Surface *BackBufferSurface() const { return m_backBuffer; }
-    GLuint BackBufferTexture() const { return m_bbColor; }
+
+    //-- UniformSource: the uniform values of the current state ----------------------
+    void WriteUniforms(UniformGroup group, const Program &program, UniformSink &out) override;
 
     //-- Shader objects -----------------------------------------------------------
     VertexShaderObject *FindVertexShader(DWORD handle);
@@ -222,57 +205,32 @@ public:
 
 private:
     Device() = default;
-    // Hooks of GLState
-    GLuint &BufferBindingSlot(GLenum target) override
-    {
-        // The element array binding belongs to the vertex array object that is bound.
-        return target == GL_ARRAY_BUFFER ? m_boundArrayBuffer : (m_curVao ? m_curVao->element : m_boundElementBuffer);
-    }
-    void OnForgetTexture(GLuint tex) override;
-    void OnForgetBuffer(GLuint buf) override;
-    void PrepareTextureRead(GLuint tex) override;
     bool Initialize(IDirect3D8 *d3d, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD behavior, D3DPRESENT_PARAMETERS *pp);
     void OnZeroRefs() override;
 
     // device.cpp
-    bool CreateContext(const D3DPRESENT_PARAMETERS &pp);
-    void QueryGLCaps();
-    void EnableExtensions();
-    void CreateGLBaseObjects();
-    void DestroyGLBaseObjects(bool contextAlive);
     bool CreateBackBuffer(const D3DPRESENT_PARAMETERS &pp);
     void DestroyBackBuffer();
     void ResetState();
-    void PresentToCanvas();
-    void CreatePresentProgram();
-    void InstallContextListeners();
     void OnContextLostInternal();
     bool RestoreContext();
-    void ResetGLCaches();
+    void ResetBackendCaches();
+    void ReleasePrograms();
     void TickTestContextLoss();
+    /// Hands the current render target and depth buffer to the backend.
+    void UpdateRenderTargets();
 public:
     /// Arms the test aid so that the next Present() drops the context (see dxwebgl2_LoseContextNow).
     void StartTestContextLoss() { m_loseCountdown = 1; m_loseArmed = true; }
 private:
 
-    // state application (device_draw.cpp)
-    bool PrepareDraw(GLenum mode);
-    void DiagCheckDrawState(GLenum mode);
-    void ApplyRenderTargets();
-    void ApplyPipeline();
-    void BindTextures();
-    bool BindAttributes(UINT pointerBase, bool userData, UINT userStride);
-    void SetAttributePointers(const VertexLayout *layout, const GLuint *bufs, const UINT *strides, UINT pointerBase,
-                              uint32_t oldEnabled, uint32_t *newEnabled);
-    void EvictVao();
-    void DeleteVao(uint64_t hash, struct VaoEntry *e);
-    void ClearVaoCache(bool contextAlive);
+    // translation of the state for the backend (device_draw.cpp)
+    bool PrepareDraw(Topology topology);
+    void DiagCheckDrawState(Topology topology);
+    void BindTextures(DrawCall &call);
     bool SelectProgram();
-    void UploadUniforms();
-    size_t UploadStream(const void *data, size_t size, bool index, size_t align);
     PipelineState DerivePipeline() const;
-    void FlushBuffers();
-    GLuint SamplerFor(int stage, TextureBase *tex);
+    SamplerDesc SamplerFor(int stage, TextureBase *tex) const;
     void BuildProgramKey(struct ProgramKey &key);
     bool DrawCommon(D3DPRIMITIVETYPE type, UINT primCount, bool indexed, UINT start, UINT baseVertex,
                     const void *userVerts, UINT userStride, const void *userIndices, D3DFORMAT userIndexFmt, UINT userVertCount);
@@ -292,20 +250,13 @@ public:
     IDirect3D8 *m_d3d = nullptr;
     D3DDEVICE_CREATION_PARAMETERS m_creation = {};
     D3DPRESENT_PARAMETERS m_pp = {};
-    int m_glContext = 0;
+    Backend *m_backend = nullptr;
     bool m_contextLost = false;
     bool m_needsReset = false;          ///< a new context exists; the application has to Reset() the device
-    volatile int m_ctxEvent = 0;        ///< set by the canvas event listeners: 1 = lost, 2 = restored
     int m_loseCountdown = 0, m_restoreCountdown = 0; ///< test aid (dxwebgl2_LoseContextAfterFrames)
     bool m_loseArmed = false;
     int m_samples = 0;                  ///< multisampling of the back buffer (0 = off)
-    GLuint m_bbMsRb = 0;                ///< multisampled colour renderbuffer (when m_samples)
-    GLuint m_resolveRead = 0, m_resolveDraw = 0;
-    bool m_bbDirty = false;
-    struct SubDepth { GLuint rb; uint32_t w, h; int samples; bool stencil; };
-    std::vector<SubDepth> m_subDepth;   ///< depth buffers standing in for ones whose sample count mismatches the target
     unsigned m_presentCounter = 0;	// Present calls, for the debug log
-    bool m_explicitSwap = false;
     bool m_inScene = false;
 
     DeviceState m_s;
@@ -317,37 +268,16 @@ public:
     Surface *m_backBuffer = nullptr;
     Surface *m_defaultDepth = nullptr;
     Ref<IDirect3DSurface8> m_curRT, m_curDS;
-    GLuint m_bbColor = 0;
-    GLuint m_fbo = 0;
-    uint64_t m_fboColorKey = 0, m_fboDepthKey = 0;   ///< what m_fbo currently has attached (see Surface::AttachColor)
-    GLuint m_boundFbo = 0xFFFFFFFF;                  ///< framebuffer bound for drawing
     uint32_t m_rtWidth = 0, m_rtHeight = 0;
 
-    // Present
-    GLuint m_presentProgram = 0, m_presentVao = 0, m_gammaTex = 0;
-    GLint m_presentGammaLoc = -1, m_presentTexLoc = -1;
+    // Gamma ramp (applied by the backend when presenting).
     D3DGAMMARAMP m_gamma;
-    bool m_gammaActive = false;
-    bool m_gammaDirty = false;
+    bool m_gammaActive = false;         ///< the ramp is not the identity
 
-    // GL state caches.
-    GLuint m_vao = 0;               ///< scratch vertex array (uncached draws)
-    std::unordered_multimap<uint64_t, VaoEntry *> m_vaoCache;
-    VaoEntry *m_curVao = nullptr;   ///< bound cached vertex array, null when the scratch one is bound
-    std::unordered_map<uint64_t, uint32_t> m_vaoSeen; ///< keys with a base vertex seen once (promoted on the second sighting)
-    uint64_t m_vaoClock = 0;
-    GLuint m_boundProgram = 0xFFFFFFFF;
-    GLuint m_boundSampler[MAX_STAGES];
-    GLuint m_whiteTex[3] = {};
-    uint32_t m_enabledAttribs = 0;  ///< arrays enabled in the scratch vertex array
-    PipelineState m_applied;
-    bool m_pipelineValid = false;
-
-    // Programs.
+    // Programs (created by the backend, cached here by key).
     std::unordered_map<std::string, Program *> m_programs;
     Program *m_curProgram = nullptr;
     bool m_keyDirty = true;
-    std::unordered_map<std::string, GLuint> m_samplers;
 
     // Versions of the uniform groups (see UniformGroup); a program re-uploads a group when its own
     // copy of the version differs.
@@ -360,34 +290,22 @@ public:
     float m_nm[9];
     bool m_derivedDirty = true;
 
-    // Streaming buffers for *UP draws.
-    GLuint m_streamVB = 0, m_streamIB = 0;
-    size_t m_streamVBSize = 0, m_streamIBSize = 0, m_streamVBPos = 0, m_streamIBPos = 0;
-
     // Shaders.
     std::unordered_map<DWORD, VertexShaderObject *> m_vertexShaders;
     std::unordered_map<DWORD, PixelShaderObject *> m_pixelShaders;
     DWORD m_nextVertexShader = 1, m_nextPixelShader = 1;
 
     // Scratch.
-    std::vector<uint8_t> m_scratch;
-    std::vector<uint16_t> m_wireIndices;
+    std::vector<ClearRect> m_clearRects;
 
     // Cursor (not shown; the browser draws the cursor).
     BOOL m_cursorVisible = FALSE;
 
     DWORD m_texLodSet[MAX_STAGES] = {};
     uint32_t m_samplerDirtyMask = 0xFF;
-    GLuint m_stageSampler[MAX_STAGES] = {};
+    GpuSampler *m_stageSampler[MAX_STAGES] = {}; ///< sampler of each stage (recomputed when the stage is dirty)
     bool m_drawingPoints = false;
     bool m_curProgramPoints = false;
-    GLuint m_attachedColorTex = 0;
-    GLuint m_whiteSampler = 0;
-    float m_presentGammaValue = -1.0f;
-    float m_clearColor[4] = {};
-    float m_clearDepth = 0;
-    GLint m_clearStencil = 0;
-    bool m_clearColorValid = false, m_clearDepthValid = false, m_clearStencilValid = false;
     unsigned m_drawCounter = 0;
 };
 

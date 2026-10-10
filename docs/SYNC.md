@@ -29,6 +29,13 @@ dxWebGL2 instead of its own copy.
 
 ## Pulling later changes of the game port: `tools/sync_from_game.sh`
 
+> **After the backend split** ([WEBGPU.md](WEBGPU.md), step 1) the GL code of `d3d8/device.cpp`, `d3d8/device_draw.cpp`,
+> `d3d8/texture.cpp`, `core/gl_state.*`, `core/program.cpp`, `core/texture_storage.cpp` and `core/buffer_storage.cpp` lives
+> in the WebGL2 backend (`src/core/gl/`), and `GLState`/`GLObject` became the backend's state cache and `GpuObject`. The
+> rules below still describe the layout of the first sync: upstream changes to those files no longer merge mechanically and
+> have to be ported by hand to the front end (state translation) or to `src/core/gl/` (GL calls). Files that the split did
+> not touch (the shader translators, the fixed-function generator, formats, D3DX, the diagnostics) sync as before.
+
 ```sh
 tools/sync_from_game.sh --dry-run          # what would change (does not write)
 tools/sync_from_game.sh                    # merge the working tree of the game repository

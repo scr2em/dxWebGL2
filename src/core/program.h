@@ -6,7 +6,7 @@
  * See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
  */
 /*
- * GLSL program generation and caching.
+ * Program keys and the GLSL generation of the fixed-function pipeline.
  *
  * A program is the combination of a vertex stage (generated from the
  * fixed-function state of the draw call, or translated from a vs.1.1 shader)
@@ -78,21 +78,30 @@ enum UniformId
 
 
 
+/// A linked program of a backend (GLSL program, WGSL shader modules): what the front end and the uniform source
+/// see of it. Backends derive from it and create it (Backend::CreateProgram).
 class Program
 {
 public:
-    ~Program();
-    GLuint id = 0;
-    GLint loc[U_COUNT];
+    ProgramKey key;
     uint32_t ver[G_COUNT] = {};   ///< version of each uniform group this program last received
     uint32_t usedGroups = 0;      ///< bit per UniformGroup: some uniform of the group exists in the program
+    uint32_t usedUniforms = 0;    ///< bit per UniformId
     int xfCount = 4;              ///< vec4s of U_XF the program reads (4 = only the projection matrix)
-    ProgramKey key;
     bool valid = false;
+    bool Uses(UniformId u) const { return (usedUniforms >> u) & 1; }
+
+protected:
+    Program() = default;
+    ~Program() = default;
 };
 
-/// Builds (or fetches from the cache) the program for the key.
-Program *CreateProgram(const ProgramKey &key, const std::string &vs, const std::string &fs);
+/// Name of a uniform in the generated shaders (the first element for arrays: "u_xf[0]").
+const char *UniformName(UniformId u);
+/// The group a uniform belongs to.
+UniformGroup UniformGroupOf(UniformId u);
+/// True when `name` occurs in the generated source `src` as a whole identifier after the declarations.
+bool SourceUsesIdentifier(const std::string &src, const char *name);
 
 std::string GenerateFixedFunctionVertexShader(const ProgramKey &key);
 std::string GenerateFixedFunctionFragmentShader(const ProgramKey &key);

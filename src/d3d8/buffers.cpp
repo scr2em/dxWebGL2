@@ -9,15 +9,16 @@
  * Vertex and index buffers.
  *
  * The application writes into a system-memory copy through Lock(); the
- * modified range is pushed to the GL buffer lazily, right before a draw call
- * reads from it, so several locks between two draws cost a single upload.
+ * modified range is pushed to the GPU buffer lazily, right before a draw call
+ * reads from it, so several locks between two draws cost a single upload
+ * (core/buffer_storage.h).
  */
 #include "d3d8/resources.h"
 
 namespace dxwebgl2 {
 
 VertexBuffer::VertexBuffer(Device *dev, UINT length, DWORD usage, DWORD fvf, D3DPOOL pool)
-    : ResourceImpl<IDirect3DVertexBuffer8>(dev), m_storage(dev, GL_ARRAY_BUFFER, length, usage),
+    : ResourceImpl<IDirect3DVertexBuffer8>(dev), m_storage(dev->GetBackend(), BufferKind::Vertex, length, usage),
       m_fvf(fvf), m_usage(usage), m_pool(pool)
 {
 }
@@ -35,7 +36,7 @@ HRESULT VertexBuffer::GetDesc(D3DVERTEXBUFFER_DESC *d)
 }
 
 IndexBuffer::IndexBuffer(Device *dev, UINT length, DWORD usage, D3DFORMAT format, D3DPOOL pool)
-    : ResourceImpl<IDirect3DIndexBuffer8>(dev), m_storage(dev, GL_ELEMENT_ARRAY_BUFFER, length, usage),
+    : ResourceImpl<IDirect3DIndexBuffer8>(dev), m_storage(dev->GetBackend(), BufferKind::Index, length, usage),
       m_format(format), m_usage(usage), m_pool(pool)
 {
 }
