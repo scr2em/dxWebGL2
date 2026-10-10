@@ -238,10 +238,18 @@ void dxwebgl2_ParseArguments(int argc, char **argv)
             dxwebgl2_SetReport(a[14] == '=' ? atoi(a + 15) : 10);
         else if (strcmp(a, "-dxwebgl2-shaders") == 0)
             dxwebgl2_SetShaderModel(0x0101, 0x0104);
-        else if (strncmp(a, "-dxwebgl2-loseafter=", 18) == 0)
+        else if (strncmp(a, "-dxwebgl2-backend=", 18) == 0)
         {
-            const char *comma = strchr(a + 18, ',');
-            dxwebgl2_LoseContextAfterFrames(atoi(a + 18), comma ? atoi(comma + 1) : 120);
+            const char *b = a + 18;
+            if (!strcmp(b, "webgl2")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGL2);
+            else if (!strcmp(b, "webgpu")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGPU);
+            else if (!strcmp(b, "auto")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_AUTO);
+            else fprintf(stderr, "[dxWebGL2] unknown backend '%s' (auto, webgl2 or webgpu)\n", b);
+        }
+        else if (strncmp(a, "-dxwebgl2-loseafter=", 20) == 0)
+        {
+            const char *comma = strchr(a + 20, ',');
+            dxwebgl2_LoseContextAfterFrames(atoi(a + 20), comma ? atoi(comma + 1) : 120);
         }
     }
 }

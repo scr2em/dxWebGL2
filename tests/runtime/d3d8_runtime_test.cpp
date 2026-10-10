@@ -211,6 +211,7 @@ static IDirect3DTexture8 *MakeDXT1()
 
 
 static bool g_shaders = false;
+static int g_wantBackend = DXWEBGL2_BACKEND_WEBGL2; // the backend the device must render through (--backend=)
 static DWORD g_vs = 0, g_psMul = 0, g_psBem = 0, g_ps14 = 0;
 static IDirect3DTexture8 *g_bump = nullptr;
 static DWORD g_inlineShaders[4] = {};
@@ -1046,8 +1047,8 @@ static void RenderFrame(float t, IDirect3DTexture8 *checker, IDirect3DTexture8 *
 //------------------------------------------------------------------------------
 static void CheckAdapterAndCaps(bool shaders)
 {
-    // Whatever was requested, the device renders through WebGL2 until the WebGPU backend exists (docs/WEBGPU.md).
-    EXPECT(dxwebgl2_GetBackend() == DXWEBGL2_BACKEND_WEBGL2);
+    // The requested backend, not a silent fallback (AUTO selects WebGL2 for now, docs/WEBGPU.md).
+    EXPECT(dxwebgl2_GetBackend() == g_wantBackend);
     EXPECT(g_d3d->GetAdapterCount() == 1);
     D3DADAPTER_IDENTIFIER8 aid;
     EXPECT_HR(g_d3d->GetAdapterIdentifier(0, 0, &aid), D3D_OK);
@@ -1476,6 +1477,88 @@ static void RunApiChecks(bool shaders)
     printf("-- API checks done: %d expectations, %d failures\n", g_expects, g_failures - before);
 }
 
+//------------------------------------------------------------------------------
+// --perf=N: N textured, lit draws per frame from a vertex/index buffer (the world matrix and the material change per
+// draw, the texture every 8 draws); prints the CPU time per frame on the rendering thread and the API calls per frame.
+//------------------------------------------------------------------------------
+static void RunPerf(int draws)
+{
+    IDirect3DTexture8 *tex[2] = {MakeChecker(64, 0xFFF0F0F0, 0xFF2060C0, true), MakeChecker(64, 0xFFC03020, 0xFF20C030, true)};
+    IDirect3DVertexBuffer8 *vb = nullptr;
+    IDirect3DIndexBuffer8 *ib = nullptr;
+    CHECK(g_dev->CreateVertexBuffer(4 * sizeof(LitVertex), D3DUSAGE_WRITEONLY, LIT_FVF, D3DPOOL_MANAGED, &vb));
+    CHECK(g_dev->CreateIndexBuffer(6 * 2, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_MANAGED, &ib));
+    BYTE *p = nullptr;
+    const LitVertex quad[4] = {{-1, -1, 0, 0, 0, -1, 0, 1}, {-1, 1, 0, 0, 0, -1, 0, 0}, {1, 1, 0, 0, 0, -1, 1, 0}, {1, -1, 0, 0, 0, -1, 1, 1}};
+    CHECK(vb->Lock(0, 0, &p, 0));
+    memcpy(p, quad, sizeof quad);
+    CHECK(vb->Unlock());
+    const WORD idx[6] = {0, 1, 2, 0, 2, 3};
+    CHECK(ib->Lock(0, 0, &p, 0));
+    memcpy(p, idx, sizeof idx);
+    CHECK(ib->Unlock());
+    D3DXMATRIX view, proj;
+    D3DXVECTOR3 eye(0, 0, -30), at(0, 0, 0), up(0, 1, 0);
+    D3DXMatrixLookAtLH(&view, &eye, &at, &up);
+    D3DXMatrixPerspectiveFovLH(&proj, D3DX_PI / 4, 640.0f / 480.0f, 1.0f, 100.0f);
+    g_dev->SetTransform(D3DTS_VIEW, &view);
+    g_dev->SetTransform(D3DTS_PROJECTION, &proj);
+    g_dev->SetRenderState(D3DRS_LIGHTING, TRUE);
+    g_dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    g_dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    D3DLIGHT8 light = {};
+    light.Type = D3DLIGHT_DIRECTIONAL;
+    light.Diffuse.r = light.Diffuse.g = light.Diffuse.b = 1.0f;
+    light.Direction = D3DXVECTOR3(0.2f, -0.3f, 1.0f);
+    g_dev->SetLight(0, &light);
+    g_dev->LightEnable(0, TRUE);
+    g_dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+    g_dev->SetTextureStageState(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+    g_dev->SetTextureStageState(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+    g_dev->SetStreamSource(0, vb, sizeof(LitVertex));
+    g_dev->SetIndices(ib, 0);
+    g_dev->SetVertexShader(LIT_FVF);
+    const int frames = 70, warmup = 10;
+    double total = 0, best = 1e9;
+    dxwebgl2_Stats st = {};
+    for (int f = 0; f < frames; ++f)
+    {
+        const double t0 = emscripten_get_now();
+        g_dev->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xFF203040, 1.0f, 0);
+        g_dev->BeginScene();
+        for (int i = 0; i < draws; ++i)
+        {
+            D3DXMATRIX world, scale;
+            D3DXMatrixRotationZ(&world, f * 0.02f + i * 0.1f);
+            D3DXMatrixScaling(&scale, 0.4f, 0.4f, 0.4f);
+            world = scale * world;
+            world._41 = (float)(i % 40) - 20.0f;
+            world._42 = (float)((i / 40) % 30) - 15.0f;
+            g_dev->SetTransform(D3DTS_WORLD, &world);
+            D3DMATERIAL8 m = {};
+            m.Diffuse.r = (i % 7) / 7.0f; m.Diffuse.g = (i % 5) / 5.0f; m.Diffuse.b = 1.0f; m.Diffuse.a = 1.0f;
+            m.Ambient = m.Diffuse;
+            g_dev->SetMaterial(&m);
+            if (i % 8 == 0) g_dev->SetTexture(0, tex[(i / 8) & 1]);
+            g_dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 4, 0, 2);
+        }
+        g_dev->EndScene();
+        g_dev->Present(nullptr, nullptr, nullptr, nullptr);
+        const double dt = emscripten_get_now() - t0;
+        dxwebgl2_GetStats(&st);
+        if (f >= warmup) { total += dt; best = dt < best ? dt : best; }
+    }
+    printf("PERF %d draws per frame: %.2f ms per frame on average, %.2f ms best (CPU, rendering thread), %u API calls, %u bytes uploaded per frame\n",
+           draws, total / (frames - warmup), best, st.glCalls, st.uploadBytes);
+    g_dev->SetTexture(0, nullptr);
+    g_dev->SetStreamSource(0, nullptr, 0);
+    g_dev->SetIndices(nullptr, 0);
+    tex[0]->Release();
+    tex[1]->Release();
+    vb->Release();
+    ib->Release();
+}
+
 static DWORD g_front[640 * 480];
 
 static void ReadBack()
@@ -1534,9 +1617,9 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--debug")) dxwebgl2_SetDebug(1);
         if (!strcmp(argv[i], "--scene2")) g_scene2 = true;
         if (!strcmp(argv[i], "--scene3")) g_scene3 = true;
-        // The GPU API to render through (dxwebgl2_SetBackend); WebGPU is not implemented yet and falls back to WebGL2.
+        // The GPU API to render through (dxwebgl2_SetBackend).
         if (!strcmp(argv[i], "--backend=webgl2")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGL2);
-        if (!strcmp(argv[i], "--backend=webgpu")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGPU);
+        if (!strcmp(argv[i], "--backend=webgpu")) { dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGPU); g_wantBackend = DXWEBGL2_BACKEND_WEBGPU; }
         if (!strcmp(argv[i], "--backend=auto")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_AUTO);
     }
     (void)blocking;
@@ -1579,6 +1662,17 @@ int main(int argc, char **argv)
     g_dev->GetDeviceCaps(&caps);
     printf("caps: max texture %u, max simultaneous textures %u, PS %x VS %x\n", (unsigned)caps.MaxTextureWidth,
            (unsigned)caps.MaxSimultaneousTextures, (unsigned)caps.PixelShaderVersion, (unsigned)caps.VertexShaderVersion);
+
+    for (int i = 1; i < argc; ++i)
+        if (!strncmp(argv[i], "--perf=", 7))
+        {
+            // Timing only: the scenes, probes and checks are not run.
+            RunPerf(atoi(argv[i] + 7));
+            printf("TEST_DONE\n");
+            printf(g_failures ? "TEST_RESULT: FAIL (perf)\n" : "TEST_RESULT: PASS (perf)\n");
+            fflush(stdout);
+            return 0;
+        }
 
     RunApiChecks(g_shaders);
 

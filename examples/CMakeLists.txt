@@ -16,6 +16,10 @@ function(dxwebgl2_add_example name source)
     target_link_options(${name} PRIVATE
         -sALLOW_MEMORY_GROWTH=1 -sEXIT_RUNTIME=0 -sASSERTIONS=1
         --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/shell.html)
+    if(DXWEBGL2_WEBGPU)
+        # The WebGPU backend (?args=-dxwebgl2-backend=webgpu) waits for the device in CreateDevice: JSPI.
+        target_link_options(${name} PRIVATE -sJSPI=1)
+    endif()
 endfunction()
 
 dxwebgl2_add_example(hello_triangle hello_triangle/main.cpp)

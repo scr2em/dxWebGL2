@@ -321,7 +321,9 @@ public:
     /// without a GPU call).
     virtual GpuBuffer *CreateBuffer(BufferKind kind, uint32_t size) = 0;
     virtual void DestroyBuffer(GpuBuffer *buffer) = 0;
-    /// Uploads `size` bytes at `offset`. `initial`: the first upload, `data` is the whole buffer.
+    /// Uploads `size` bytes at `offset`. `initial`: the first upload, `data` is the whole buffer. `data` points into the
+    /// caller's copy of the whole buffer (the `size` bytes given to CreateBuffer start at `data - offset`), so that a
+    /// backend can widen the range (WebGPU copies multiples of 4 bytes).
     virtual void WriteBuffer(GpuBuffer *buffer, uint32_t offset, uint32_t size, const void *data, bool initial) = 0;
 
     virtual GpuTexture *CreateTexture(const TextureDesc &desc) = 0;

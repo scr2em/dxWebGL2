@@ -16,6 +16,7 @@
 
 #include "core/types.h"
 #include "core/program.h"
+#include "core/wgsl.h"
 
 namespace dxwebgl2 {
 
@@ -64,5 +65,10 @@ bool AssembleShader(const char *source, size_t length, std::vector<DWORD> &out, 
 
 /// Wraps the translated vertex shader body into a complete GLSL vertex shader.
 std::string BuildTranslatedVertexShader(const VertexShaderObject &vs, const ProgramKey &key);
+
+/// WGSL (WebGPU backend, core/wgsl.h conventions): the vertex stage of a vs.1.1 shader for an input signature, and the
+/// fragment stage of a ps.1.x shader. The code is empty when the shader cannot be translated.
+WgslStage GenerateTranslatedVertexWGSL(const VertexShaderObject &vs, const ProgramKey &key, uint32_t inputSignature);
+WgslStage GeneratePixelShaderWGSL(const PixelShaderObject &ps, const ProgramKey &key);
 
 } // namespace dxwebgl2

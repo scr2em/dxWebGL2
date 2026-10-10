@@ -233,14 +233,18 @@ void Device::GetGammaRamp(D3DGAMMARAMP *pRamp)
 // non-managed resources and calls Reset(), which creates every GPU object
 // again from the system memory copies the resources keep (RestoreContext()).
 //------------------------------------------------------------------------------
+/// What the GPU context is called in messages: the WebGL2 context or the WebGPU device.
+static const char *ContextName(const Backend *b) { return b->Kind() == BackendKind::WebGPU ? "WebGPU device" : "WebGL context"; }
+
 void Device::OnContextLostInternal()
 {
     m_contextLost = true;
     m_needsReset = false;
     m_inScene = false;
     ++g_totals.contextLosses;
-    fprintf(stderr, "[dxWebGL2] The WebGL context was lost (graphics driver reset or the browser reclaimed the GPU); the application is expected to reset the device when it is back\n");
-    DXW_HIT(Event, "WebGL context lost");
+    fprintf(stderr, "[dxWebGL2] The %s was lost (graphics driver reset or the browser reclaimed the GPU); the application is expected to reset the device when it is back\n",
+            ContextName(m_backend));
+    DXW_HIT(Event, "%s lost", ContextName(m_backend));
     m_backend->OnContextLost();
     if (m_loseArmed && m_restoreCountdown <= 0) m_restoreCountdown = GetConfig().loseRestoreFrames;
 }
@@ -256,8 +260,8 @@ bool Device::CheckContext()
         m_contextLost = false;
         m_needsReset = true;
         ++g_totals.contextRestores;
-        fprintf(stderr, "[dxWebGL2] The WebGL context was restored; waiting for the application to Reset() the device\n");
-        DXW_HIT(Event, "WebGL context restored");
+        fprintf(stderr, "[dxWebGL2] The %s was restored; waiting for the application to Reset() the device\n", ContextName(m_backend));
+        DXW_HIT(Event, "%s restored", ContextName(m_backend));
     }
     return !m_contextLost && !m_needsReset;
 }
@@ -271,11 +275,12 @@ void Device::TickTestContextLoss()
     {
         if (--m_loseCountdown == 0)
         {
+            const bool webgpu = m_backend->Kind() == BackendKind::WebGPU;
             if (m_backend->TestLoseContext())
-                fprintf(stderr, "[dxWebGL2] test: WEBGL_lose_context.loseContext() called\n");
+                fprintf(stderr, "[dxWebGL2] test: %s called\n", webgpu ? "GPUDevice.destroy()" : "WEBGL_lose_context.loseContext()");
             else
             {
-                fprintf(stderr, "[dxWebGL2] test: WEBGL_lose_context is not available\n");
+                fprintf(stderr, "[dxWebGL2] test: %s is not available\n", webgpu ? "GPUDevice.destroy()" : "WEBGL_lose_context");
                 m_loseArmed = false;
             }
             m_restoreCountdown = GetConfig().loseRestoreFrames;
@@ -284,7 +289,8 @@ void Device::TickTestContextLoss()
     }
     if (m_restoreCountdown > 0 && --m_restoreCountdown == 0)
     {
-        fprintf(stderr, "[dxWebGL2] test: WEBGL_lose_context.restoreContext() called\n");
+        fprintf(stderr, "[dxWebGL2] test: %s\n", m_backend->Kind() == BackendKind::WebGPU ? "a new WebGPU device may be created"
+                                                                                       : "WEBGL_lose_context.restoreContext() called");
         m_backend->TestRestoreContext();
         m_loseArmed = false;
     }
@@ -320,7 +326,7 @@ bool Device::RestoreContext()
     IdentityGammaRamp(m_gamma);
     m_backend->SetGammaRamp(m_gamma.red, m_gamma.green, m_gamma.blue, m_gammaActive);
     m_needsReset = false;
-    fprintf(stderr, "[dxWebGL2] The device was restored on the new WebGL context\n");
+    fprintf(stderr, "[dxWebGL2] The device was restored on the new %s\n", ContextName(m_backend));
     return true;
 }
 

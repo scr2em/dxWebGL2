@@ -57,3 +57,63 @@ export function decodePng(buf) {
   }
   return { width, height, data: out, pixel: (x, y) => { const o = (y * width + x) * 4; return [out[o], out[o + 1], out[o + 2], out[o + 3]]; } };
 }
+
+const crcTable = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; ++n) {
+    let c = n;
+    for (let k = 0; k < 8; ++k) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (const b of buf) c = crcTable[(c ^ b) & 255] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/** Encodes RGBA8 pixels (`data`, width * height * 4 bytes) as a PNG (for difference pictures). */
+export function encodePng(width, height, data) {
+  const raw = Buffer.alloc((width * 4 + 1) * height);
+  for (let y = 0; y < height; ++y) data.copy(raw, y * (width * 4 + 1) + 1, y * width * 4, (y + 1) * width * 4);
+  const chunk = (type, body) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(body.length);
+    const tb = Buffer.concat([Buffer.from(type, 'latin1'), body]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(tb));
+    return Buffer.concat([len, tb, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr),
+                        chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+/**
+ * Compares two decoded images channel by channel (RGB): the largest and the mean absolute difference, the number of
+ * pixels with a channel differing by more than `tolerance`, and a difference picture (the differing pixels in red over
+ * a dimmed copy of `a`).
+ */
+export function compareImages(a, b, tolerance = 8) {
+  if (a.width !== b.width || a.height !== b.height) throw new Error(`sizes differ: ${a.width}x${a.height} vs ${b.width}x${b.height}`);
+  const n = a.width * a.height;
+  let max = 0, sum = 0, over = 0;
+  const diff = Buffer.alloc(n * 4);
+  for (let i = 0; i < n; ++i) {
+    const o = i * 4;
+    let m = 0;
+    for (let c = 0; c < 3; ++c) {
+      const d = Math.abs(a.data[o + c] - b.data[o + c]);
+      sum += d;
+      if (d > m) m = d;
+    }
+    if (m > max) max = m;
+    const bad = m > tolerance;
+    if (bad) ++over;
+    const g = (a.data[o] + a.data[o + 1] + a.data[o + 2]) / 12;
+    diff[o] = bad ? 255 : g; diff[o + 1] = bad ? 0 : g; diff[o + 2] = bad ? 0 : g; diff[o + 3] = 255;
+  }
+  return { max, mean: sum / (n * 3), over, pixels: n, overShare: over / n, diff };
+}

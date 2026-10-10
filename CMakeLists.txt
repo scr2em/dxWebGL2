@@ -54,6 +54,9 @@ option(DXWEBGL2_USE_PROJECT_WINDOWS_H
 set(DXWEBGL2_WINDOWS_H_TARGET "" CACHE STRING
     "Interface target providing the project's windows.h include directories (and flags such as -fshort-wchar); only used with DXWEBGL2_USE_PROJECT_WINDOWS_H")
 option(DXWEBGL2_WARNINGS_AS_ERRORS "Treat compiler warnings in the library sources as errors" OFF)
+option(DXWEBGL2_WEBGPU
+    "Build the WebGPU backend (docs/WEBGPU.md). The library and every application linking it then use Emscripten's emdawnwebgpu port (--use-port=emdawnwebgpu, added to the link options); the backend is selected with dxwebgl2_SetBackend / -dxwebgl2-backend=webgpu and needs an application linked with -sJSPI (or -sASYNCIFY)"
+    OFF)
 option(DXWEBGL2_WEBD3D8_COMPAT
     "Export the original WebD3D8_* function names (link compatibility for code of the game port that declares them itself)" ON)
 
@@ -86,8 +89,13 @@ endif()
 # ---------------------------------------------------------------------------------------------
 # The library
 # ---------------------------------------------------------------------------------------------
-# src/core: the API-independent core; src/core/gl: the WebGL2 backend (see docs/ARCHITECTURE.md, docs/WEBGPU.md).
+# src/core: the API-independent core; src/core/gl: the WebGL2 backend; src/core/webgpu: the WebGPU backend (optional,
+# DXWEBGL2_WEBGPU). See docs/ARCHITECTURE.md, docs/WEBGPU.md.
 file(GLOB DXWEBGL2_CORE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/core/gl/*.cpp)
+if(DXWEBGL2_WEBGPU)
+    file(GLOB DXWEBGL2_WEBGPU_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/core/webgpu/*.cpp)
+    list(APPEND DXWEBGL2_CORE_SOURCES ${DXWEBGL2_WEBGPU_SOURCES})
+endif()
 file(GLOB DXWEBGL2_D3D8_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/d3d8/*.cpp)
 set(DXWEBGL2_COMPAT_SOURCES "")
 if(DXWEBGL2_WEBD3D8_COMPAT)
@@ -110,8 +118,14 @@ function(dxwebgl2_add_library name pthreads)
         target_compile_options(${name} PRIVATE -Werror)
     endif()
 
-    # WebGL2 only (GLES 3 headers + Emscripten's WebGL2 support library).
+    # WebGL2 (GLES 3 headers + Emscripten's WebGL2 support library).
     target_link_options(${name} INTERFACE -sUSE_WEBGL2=1 -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2)
+    if(DXWEBGL2_WEBGPU)
+        # WebGPU through Emscripten's emdawnwebgpu port (<webgpu/webgpu.h>); the application links the port too.
+        target_compile_definitions(${name} PRIVATE DXWEBGL2_HAVE_WEBGPU=1)
+        target_compile_options(${name} PRIVATE --use-port=emdawnwebgpu)
+        target_link_options(${name} INTERFACE --use-port=emdawnwebgpu)
+    endif()
 
     if(DXWEBGL2_WEBD3D8_COMPAT)
         # A weak reference to WebD3D8_LookupProc (a Win32 layer's LoadLibrary("D3D8.DLL")) does not make the linker take

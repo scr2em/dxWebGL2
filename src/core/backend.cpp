@@ -14,6 +14,9 @@
 namespace dxwebgl2 {
 
 Backend *CreateWebGL2Backend(); // core/gl/gl_backend.cpp
+#ifdef DXWEBGL2_HAVE_WEBGPU
+Backend *CreateWebGPUBackend(); // core/webgpu/wgpu_backend.cpp: null when WebGPU is not usable (the reason is logged)
+#endif
 
 void PipelineState::Invalidate()
 {
@@ -26,20 +29,31 @@ void PipelineState::Invalidate()
 Backend *CreateBackend()
 {
     Config &cfg = GetConfig();
+    Backend *b = nullptr;
     switch (cfg.backend)
     {
     case DXWEBGL2_BACKEND_WEBGPU:
-        Log("the WebGPU backend is not available in this version, using WebGL2");
-        DXW_HIT(Approximated, "WebGPU backend requested, WebGL2 used (not implemented yet)");
+#ifdef DXWEBGL2_HAVE_WEBGPU
+        b = CreateWebGPUBackend();
+        if (!b)
+        {
+            Log("the WebGPU backend is not available, using WebGL2");
+            DXW_HIT(Approximated, "WebGPU backend requested, WebGL2 used (WebGPU not available)");
+        }
+#else
+        Log("this build has no WebGPU backend (configure with -DDXWEBGL2_WEBGPU=ON), using WebGL2");
+        DXW_HIT(Approximated, "WebGPU backend requested, WebGL2 used (not built)");
+#endif
         break;
     case DXWEBGL2_BACKEND_AUTO:
+        // WebGL2 until the WebGPU backend passes the whole test suite (docs/WEBGPU.md, section 9).
     case DXWEBGL2_BACKEND_WEBGL2:
         break;
     default:
         Log("unknown backend %d requested, using WebGL2", cfg.backend);
         break;
     }
-    Backend *b = CreateWebGL2Backend();
+    if (!b) b = CreateWebGL2Backend();
     cfg.activeBackend = (int)b->Kind();
     return b;
 }

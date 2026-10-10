@@ -6,7 +6,8 @@
 // See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
 //
 // Shared helpers of the headless Chromium runners: finding Playwright and Chromium, and launching a
-// browser that has a WebGL2 implementation without a GPU (SwiftShader through ANGLE).
+// browser that has WebGL2 and WebGPU implementations without a GPU (SwiftShader through ANGLE, and SwiftShader's
+// Vulkan for WebGPU).
 //
 // Environment:
 //   NODE_PATH                 directory with the `playwright` package (default /opt/node22/lib/node_modules)
@@ -38,13 +39,29 @@ export function chromiumPath() {
   return candidates.find((c) => fs.existsSync(c) && fs.statSync(c).isFile());
 }
 
-export async function launchBrowser() {
+/**
+ * Chromium flags: WebGL2 from SwiftShader through ANGLE, and WebGPU from SwiftShader's Vulkan (without the Vulkan
+ * flags requestDevice fails; they do not change what WebGL2 renders). `extra` adds flags.
+ */
+export function browserArgs(extra = []) {
+  return ['--use-angle=swiftshader', '--use-gl=angle', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist',
+          '--enable-webgl', '--no-sandbox', '--enable-features=SharedArrayBuffer,Vulkan', '--enable-unsafe-webgpu',
+          '--use-vulkan=swiftshader', '--use-webgpu-adapter=swiftshader', ...extra];
+}
+
+export async function launchBrowser(extra = []) {
   const playwright = loadPlaywright();
-  return playwright.chromium.launch({
-    executablePath: chromiumPath(),
-    args: ['--use-angle=swiftshader', '--use-gl=angle', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist',
-           '--enable-webgl', '--no-sandbox', '--enable-features=SharedArrayBuffer'],
-  });
+  return playwright.chromium.launch({ executablePath: chromiumPath(), args: browserArgs(extra) });
+}
+
+/** The backend selected on a runner's command line (--backend=webgl2|webgpu|auto), removed from `args`. */
+export function takeBackend(args, fallback = 'webgl2') {
+  const i = args.findIndex((a) => a.startsWith('--backend='));
+  if (i < 0) return fallback;
+  const b = args[i].slice(10);
+  args.splice(i, 1);
+  if (!['webgl2', 'webgpu', 'auto'].includes(b)) { console.error('unknown backend ' + b); process.exit(2); }
+  return b;
 }
 
 /** Opens `url` in a new page and collects everything the page and its workers print. */

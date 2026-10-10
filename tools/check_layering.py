@@ -14,7 +14,7 @@
                  of the format table in core/format.cpp are the one exception, see EXCEPTIONS).
     src/core/gl  the WebGL2 backend: the only place that includes the GLES/WebGL headers and calls WebGL.
                  May include src/core.
-    src/core/webgpu (later) the WebGPU backend, with the same rules as src/core/gl for its API.
+    src/core/webgpu the WebGPU backend, with the same rules as src/core/gl for its API (webgpu.h).
     src/api      helpers shared by the front ends (COM plumbing). May include src/core (not a backend).
     src/d3d8     the Direct3D 8 front end. May include src/core (not a backend) and src/api; renders through the
                  Backend interface only: no GPU API header, call, type or constant.

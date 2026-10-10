@@ -1,14 +1,10 @@
 # WebGPU backend
 
-Status: **step 1 of the plan is done: the backend seam.** The Direct3D 8 front end renders through an abstract
-`Backend` (`src/core/backend.h`); the WebGL2 code lives behind it in `src/core/gl/`. The WebGPU backend itself is not
-written yet: `dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGPU)` logs a message and uses WebGL2, and
-`DXWEBGL2_BACKEND_AUTO` (the default) selects WebGL2.
-
-The goal is a second backend, selectable at run time (automatically WebGPU when the browser offers it, WebGL2
-otherwise), that renders the same Direct3D 8 application unchanged. This document is the design: the interface, how
-Direct3D 8 state maps onto WebGPU objects, what WebGPU lacks and how it is emulated, shader generation, threading and
-asynchrony, the selection API, and the test plan.
+Status: **step 2 is done: the WebGPU backend renders everything the WebGL2 backend renders**, the fixed-function
+pipeline and vertex / pixel shaders 1.x alike. It is built with `-DDXWEBGL2_WEBGPU=ON` (Emscripten's emdawnwebgpu
+port) and selected with `dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGPU)` or `-dxwebgl2-backend=webgpu`; the application
+is linked with `-sJSPI`. Every runtime, feature and regression test runs on both backends (section 7).
+`DXWEBGL2_BACKEND_AUTO` (the default) still selects WebGL2: switching it is the decision of the next step (section 10).
 
 ```
   your Direct3D 8 code
@@ -18,17 +14,17 @@ asynchrony, the selection API, and the test plan.
   |             program keys, uniform values               |   (PipelineState, ProgramKey, DrawCall, ...)
   +-------v-----------------------------------------------+
   |  src/core   backend.h (the interface), resources with  |   BufferStorage, TextureBase, SurfaceStorage:
-  |             system memory copies, formats, GLSL        |   CPU copies + backend handles
-  |             generation, shader translators             |
+  |             system memory copies, formats, GLSL and    |   CPU copies + backend handles
+  |             WGSL generation, shader translators        |
   +-------v-------------------------+---------------------+
-  |  src/core/gl   WebGL2 backend   |  src/core/webgpu    |   (WebGPU: step 2)
+  |  src/core/gl   WebGL2 backend   |  src/core/webgpu    |
   +---------------------------------+---------------------+
 ```
 
 ## 1. The backend interface
 
-`src/core/backend.h` is what a Direct3D front end asks of the GPU API. It was cut at the level WebGPU works at, not at
-the level of GL calls:
+`src/core/backend.h` is what a Direct3D front end asks of the GPU API underneath. It was cut at the level WebGPU works
+at, not at the level of GL calls:
 
 | Area | Interface | Notes |
 |---|---|---|
@@ -36,245 +32,218 @@ the level of GL calls:
 | Back buffer | `CreateBackBuffer(w, h, samples)`, `DestroyBackBuffer()`, `SetGammaRamp()`, `Present()`, `ReadBackBuffer()` | the back buffer is a texture of the backend; `Present()` draws it to the canvas (with the gamma ramp) |
 | Device loss | `IsContextLost()`, `HasContextEvent()`/`ClearContextEvent()`, `OnContextLost()`, `RestoreContext()`, test aids | the front end keeps the Direct3D semantics (`D3DERR_DEVICELOST`, `DEVICENOTRESET`, `Reset`) |
 | Resources | `CreateBuffer/DestroyBuffer/WriteBuffer`, `CreateTexture/DestroyTexture/WriteTexture/ReadTexture`, `CreateSurface/DestroySurface/ReadSurface`, `GetSampler(SamplerDesc)` | opaque handles (`GpuBuffer`, `GpuTexture`, `GpuSurface`, `GpuSampler`); data is handed over in the Direct3D memory layout of the `D3DFORMAT`, the backend converts what its API needs |
-| Programs | `CreateProgram(ProgramKey, vs object, ps object)`, `DestroyProgram()` | the backend generates the code for its API from the key (GLSL today, WGSL next) |
+| Programs | `CreateProgram(ProgramKey, vs object, ps object)`, `DestroyProgram()` | the backend generates the code for its API from the key (GLSL or WGSL) |
 | Rendering | `SetRenderTargets(color, depth)`, `Clear(ClearCall)`, `Draw(DrawCall)` | one call per draw with everything it depends on |
 | Cache hints | `InvalidateState()`, `InvalidateVertexInput()` | the front end reset its state / changed its streams |
 
-The key types:
+The key types: `DrawCall` (topology including fans, fill mode, counts, base vertex, the full `PipelineState`, the
+`Program`, the uniform version counters and a `UniformSource`, a `TextureBinding` per stage, the `VertexLayout` and the
+16 streams or user memory, the index buffer or user indices), `PipelineState` (neutral enumerations, compared with
+`memcmp`), `UniformSource` / `UniformSink` (the front end produces the values of a uniform group, the backend writes
+them to GL uniforms or into a uniform block), `RenderTargetRef` (refers to the front end's storage objects so that the
+binding survives a device loss), `SamplerDesc` (Direct3D numbering) and `GpuObject` (everything that owns backend
+objects; told about a loss and a restore). The CPU emulation of primitive types and fill modes that both backends need
+(`ExpandTriangles`, `TrianglesToLines`) is part of the interface module.
 
-* **`DrawCall`**: topology (including fans), fill mode, counts, base vertex; the full `PipelineState`; the `Program`;
-  the uniform version counters and a `UniformSource`; one `TextureBinding` (texture handle, sampler handle, base mip
-  level) per stage; the `VertexLayout`, the 16 streams (`BufferStorage` + stride) or user memory; the index buffer or
-  user indices. Nothing is applied piecemeal: a WebGPU backend turns it into (pipeline, bind groups, vertex/index
-  buffers, draw), the WebGL2 backend diffs it against its state cache and issues only the GL calls that differ.
-* **`PipelineState`**: blend (factors, op, enable), depth (test, function, write, range), stencil (test, function,
-  reference, masks, operations), culling and front face, colour write mask, polygon offset, viewport, scissor. Neutral
-  enumerations (`CompareFunc`, `BlendFactor`, `BlendOp`, `StencilOp`, `FrontFace`), filled after a `memset` so that it
-  can be hashed and compared with `memcmp`.
-* **`UniformSource` / `UniformSink`**: the front end produces the values of a uniform group
-  (`Device::WriteUniforms`), the backend receives them through a sink (`Vec4`, `Vec2`, `Float`, `Mat4` per
-  `UniformId`). The WebGL2 sink calls `glUniform*`; a WebGPU sink writes into a uniform buffer at the offsets of its
-  WGSL layout. Which groups are sent is decided by the backend from the version counters in the call.
-* **`RenderTargetRef`**: what a draw renders into, referring to the front end's *storage objects* (`TextureBase` +
-  face/level, `SurfaceStorage`, or the back buffer), so that the binding survives the recreation of GPU objects after a
-  device loss.
-* **`SamplerDesc`**: filters, address modes and anisotropy in Direct3D numbering (identical in Direct3D 8 and 9); the
-  backend caches sampler objects per description, the front end keeps the handle per stage.
-* **`GpuObject`**: base of every core object that owns backend objects (`BufferStorage`, `TextureBase`,
-  `SurfaceStorage`). The backend keeps the list and tells every object when the context is lost and when a new one is
-  ready, so it can recreate its GPU objects from its system memory copy (WebGL context loss today, `GPUDevice.lost`
-  tomorrow).
+What step 2 changed in the interface: `WriteBuffer`'s `data` is documented to point into the caller's copy of the whole
+buffer (`BufferStorage` always did that), so that a backend can widen a range to whole 4-byte words. Nothing else:
+the GL leftovers listed by step 1 stay harmless (`InvalidateVertexInput()` is ignored by WebGPU; the uniform versions
+per program are what the WebGPU backend needs too, see section 2; the format table's GL columns are not used by it).
 
-The CPU emulation of primitive types and fill modes that both backends need (`ExpandTriangles`, `TrianglesToLines`)
-is part of the interface module.
-
-### What the WebGL2 backend keeps internally
-
-The state cache (bound buffers/textures/samplers/program/framebuffer, the applied `PipelineState`, clear values), the
-vertex array object cache, the streaming buffers of user pointer draws, the framebuffer object with its attachment
-keys and the substitute depth buffers, the white textures for stages without one, the present program and the
-multisample resolve. Objects of a lost context are recognised by a context *generation* stored in every GL object, so
-that nothing of a dead context is deleted.
-
-### Known GL leftovers in the interface (to revisit in step 2)
-
-* `InvalidateVertexInput()` exists only to keep the WebGL2 vertex array signature reset where the device did it; a
-  WebGPU backend ignores it.
-* Uniform versions are tracked per program (`Program::ver`), which is what GL needs (uniforms live in the program).
-  WebGPU keeps one buffer per group and can track versions per group; the interface allows both.
-* The format table (`core/format.cpp`) carries the WebGL2 storage columns and the upload conversion
-  (`PrepareForGL`); the WebGPU backend gets its own format table and conversions in `src/core/webgpu/`.
-
-## 2. Mapping the state to WebGPU
+## 2. How Direct3D state maps to WebGPU (as implemented)
 
 ### Render pipelines
 
-`GPURenderPipeline`s are created lazily and cached by a key made of:
+`GPURenderPipeline`s are created on first use and cached by `WgPipelineKey`: the program, the vertex input signature of
+the layout (section 4), `VertexLayout::id`, the stride and stream of every vertex buffer slot (the streams the layout
+uses, at most 8: WebGPU's `maxVertexBuffers`), the topology, instancing (point lists, section 3), cull mode and front
+face (the flipped GL convention of `PipelineState::frontFace` inverted: WebGPU's framebuffer y points down like
+Direct3D's), blend (enable, factors, operation; `min`/`max` force the factors to one, which GL ignores and WebGPU
+requires), the colour write mask, depth write and compare (writes only with the depth test, like GL), stencil (front =
+back), depth bias (`ZBIAS` -> `depthBias` = polygon offset units, `depthBiasSlopeScale` = factor, triangles only), the
+formats of the attachments and the sample count. The last key is compared first (`memcmp`), then a hash map; a
+program's pipelines are released with it.
 
-* the program (the two WGSL shader modules, which come from the `ProgramKey`),
-* the vertex input: `VertexLayout::id` plus the stride of every stream used (`GPUVertexBufferLayout`s),
-* the topology (`point-list`, `line-list`, `line-strip`, `triangle-list`, `triangle-strip`; fans are expanded, see
-  below) and the strip index format,
-* from `PipelineState`: blend enable/factors/operation, colour write mask, depth compare/write, stencil
-  compare/operations/read mask/write mask (front = back for Direct3D 8), cull mode and front face, depth bias
-  (`ZBIAS` -> `depthBias`, `depthBiasSlopeScale`),
-* the formats of the colour and depth attachments and the sample count.
+Viewport (with the depth range), scissor and the stencil reference are dynamic pass state, set only when they change.
 
-Dynamic state stays outside the key: viewport (`setViewport`, including the depth range), scissor
-(`setScissorRect`), stencil reference (`setStencilReference`), and in Direct3D 9 the blend constant. A small
-two-level cache (hash of the key, then a full compare) keeps the per-draw cost at one hash when nothing changes; the
-pipeline creation itself is the expensive part and happens once per combination (applications use a few hundred).
+### Bind groups and uniforms
 
-### Bind groups
+* **Group 0: the program's uniform block at a dynamic offset.** The WGSL struct of a program holds the uniforms it
+  reads, in `UniformId` order, 16-byte aligned; the light and texture transform arrays of fixed-function programs are
+  sized for the key (one light: 7 vectors instead of 56). The program keeps a CPU copy of its block; before a draw the
+  groups whose version changed since the program last received them are written into it through the `UniformSink`
+  (the same version counters as GL); a changed block, or the first draw after a submit, appends the block to a CPU
+  staging ring (256-byte aligned) and binds group 0 at that offset. The ring is uploaded with **one `writeBuffer` per
+  submit**, right before it, and starts over afterwards. One binding instead of one per uniform group: Direct3D has 16
+  groups and `maxDynamicUniformBuffersPerPipelineLayout` is 8; and one copy per changed draw is cheaper than one
+  `writeBuffer` per group.
+* **Group 1: textures and samplers** of the stages (`tx<s>` binding 2s, `sm<s>` binding 2s+1). The bind group layout
+  follows the stage texture types of the key (2D, cube, 3D); stages without a texture (or whose texture is the render
+  target) get 1x1 white textures; `TextureBinding::baseLevel` (`D3DTSS_MAXMIPLEVEL`) selects a view with that
+  `baseMipLevel`. Bind groups are cached by (layout, texture id, base level, sampler id); a destroyed texture's entries
+  are released with it.
+* **Samplers** are cached per `SamplerDesc`. A texture sampled without mip mapping uses `lodMaxClamp` 0.25 with
+  nearest mip selection (level 0 only, while the min / mag filter decision still follows the level of detail; a clamp
+  to 0 would always magnify); anisotropy only when every filter is linear (a WebGPU rule). `BORDER` is `clamp-to-edge`
+  plus the shader emulation (`StageKey::borderMask`), `MIRRORONCE` is `mirror-repeat`.
 
-* group 0: uniforms. One `GPUBuffer` with a ring of uniform blocks per frame; each uniform group is a slice written
-  with `queue.writeBuffer` only when its version changed; bound with dynamic offsets so that changing a group does
-  not create a bind group.
-* group 1: textures and samplers of stages 0-7. The layout follows the stage texture types of the `ProgramKey`
-  (2D, cube, 3D view dimensions); stages without a texture (or whose texture is the render target) get 1x1 white
-  dummies; `TextureBinding::baseLevel` (`D3DTSS_MAXMIPLEVEL`) selects a texture view with that `baseMipLevel`. Bind
-  groups are cached by (texture views, samplers).
+### Buffers, textures and the order of queue writes
 
-### Uniforms
+* Vertex and index buffers are `GPUBuffer`s (`VERTEX | INDEX | COPY_DST`); `WriteBuffer` -> `queue.writeBuffer`, the
+  range widened to whole words inside the caller's copy. Draws from user memory, rebuilt index lists (fans, fill modes)
+  and gathered or repacked vertices go through a second staging ring, uploaded like the uniform ring.
+* Textures are `GPUTexture`s (`TEXTURE_BINDING | COPY_DST | COPY_SRC`, `| RENDER_ATTACHMENT` for render target
+  formats); `WriteTexture` -> `queue.writeTexture` after the format conversion (section 3); compressed copies cover
+  whole blocks (the physical size of small mip levels). Surfaces (render targets, depth buffers) are textures.
+* **Ordering.** Queue writes take effect before the commands of the next submit, while the commands of a frame are
+  recorded into one encoder submitted at `Present`. A write into a buffer or texture that a recorded command uses
+  (drawn with, sampled, rendered into since the last submit) therefore submits what was recorded first, so that the
+  earlier commands see the earlier contents (the classic dynamic vertex buffer pattern, `LockRect` on a texture drawn
+  with earlier in the frame). The diagnostics report counts these submits (`Perf` hits).
 
-The uniform groups and names of `UniformId` stay; the WGSL emitter declares one struct per group with explicit
-offsets (16-byte vec4 rows, matrices as 4 vec4s, the float arrays `u_lod` padded to vec4 or packed into vec4s), and the
-WebGPU `UniformSink` writes `Vec4/Vec2/Float/Mat4` data at those offsets. `maxUniformBufferBindingSize` (64 KB) is far
-above what Direct3D 8 needs (96 vertex shader constants).
+### Render passes and clears
 
-### Buffers and textures
+Draws are recorded into a `GPURenderPassEncoder` that stays open while the render targets do not change. It ends on
+`SetRenderTargets` with other targets, before read-backs and uploads that need a submit, and at `Present`. A clear of
+the whole target before the first draw of a pass becomes the pass's load operations (colour, depth, stencil
+separately); other clears (rectangles, the viewport, or after draws) draw a full-screen triangle per rectangle with
+viewport and scissor set to it: colour from the shader, depth through z with `always` and writes, stencil by `replace`
+with the reference. Clears that no draw follows get a pass of their own. A depth buffer whose size or sample count
+differs from the colour target (Direct3D 8 allows a larger one) is replaced by a private one of the target's size.
 
-* Vertex and index buffers: `GPUBuffer` with `VERTEX|INDEX|COPY_DST`; `WriteBuffer` -> `queue.writeBuffer` (ranges
-  widened to 4-byte multiples, the CPU copy makes that free). User pointer draws stream through a ring buffer, as in
-  WebGL2.
-* Textures: `GPUTexture` with `TEXTURE_BINDING|COPY_DST` (`|RENDER_ATTACHMENT` for render targets);
-  `WriteTexture` -> `queue.writeTexture` (no row alignment requirement, unlike buffer copies), the data converted to the
-  WebGPU format first (see the format table below). Surfaces (render targets, depth buffers) are textures with
-  `RENDER_ATTACHMENT`.
+### Back buffer, presentation, multisampling
 
-### Render passes
+The back buffer is an `rgba8unorm` texture. `Present` draws it into the canvas texture (`getCurrentTexture()`, the
+canvas configured with the preferred format, `bgra8unorm` here, `opaque`) with `textureLoad`, through the gamma ramp
+table when one is set, and submits. Like WebGL2 from a pthread, the browser shows the frame when the thread yields
+(`OnFramePresented` with `emscripten_sleep(0)` for loops that never return; `--frames=600 --yield` tests it). A
+multisampled back buffer is a 4x texture resolved into the back buffer at the end of every pass (`resolveTarget`); every
+request of 2 or more samples is rendered with 4 (`GpuCaps::maxSamples` = 4, the front end reports the clamped type).
 
-Draws are recorded into a `GPURenderPassEncoder` that stays open while the render targets do not change. A pass ends
-on `SetRenderTargets` with other targets, on a read-back, on a texture upload of an attachment, and on `Present`. Clears
-at the start of a pass become `loadOp: 'clear'`; clears in the middle of a pass, and clears restricted to rectangles
-(`Clear` with `D3DRECT`s, or a viewport smaller than the target), draw a quad with the clear values (colour, depth via
-the quad's z, stencil via the stencil reference with `replace`). The command encoder is submitted at `Present` and
-before read-backs.
-
-## 3. Direct3D 8 features WebGPU lacks, and their emulation
+## 3. Direct3D 8 features WebGPU lacks, and their emulation (as implemented)
 
 | Feature | WebGPU | Emulation |
 |---|---|---|
-| Triangle fans (`D3DPT_TRIANGLEFAN`) | no fan topology | expanded to a triangle list (`ExpandTriangles`); for static index buffers the expansion is cached per (buffer, range, version) |
-| Point sprites, point size (`D3DRS_POINTSIZE*`, `POINTSPRITEENABLE`, `POINTSCALE*`) | points are 1 pixel | point lists are drawn as instanced quads: the vertex shader reads the point's vertex from a storage buffer (or a per-instance vertex buffer), computes the size as today (`u_pt`) and offsets the corners in clip space; sprite texture coordinates from the corner |
-| Fill modes `WIREFRAME` / `POINT` | no polygon mode | CPU rebuild to line/point lists, as WebGL2 does today |
+| Triangle fans | no fan topology | expanded to a triangle list on the CPU (`ExpandTriangles`, indices through the stream ring); each triangle starts with its second vertex so that flat shading takes Direct3D's vertex |
+| Point lists with sizes and sprites (`POINTSIZE*`, `POINTSCALE*`, `POINTSPRITEENABLE`) | points are 1 pixel | every point list is drawn as instanced quads: 4 vertices of a strip per point, the vertex buffers step per instance, the vertex stage computes the size as the GLSL one does (`u_pt`) and offsets the corners in clip space; the sprite coordinate (u right, v down) is passed to the fragment stage. Indexed point lists gather their vertices on the CPU first |
+| Fill modes `WIREFRAME` / `POINT` | no polygon mode | CPU rebuild to line / point lists, as WebGL2 does |
 | Line width | 1 only | as WebGL2 (1 pixel) |
-| `D3DTADDRESS_BORDER` | no border colour | shader emulation (already in the generated code: `StageKey::borderMask`, `u_border`), `clamp-to-edge` sampler |
+| `D3DTADDRESS_BORDER` | no border colour | shader emulation (`StageKey::borderMask`, `u_border`), `clamp-to-edge` sampler |
 | `D3DTADDRESS_MIRRORONCE` | no | `mirror-repeat` (as WebGL2) |
-| 16-bit colour formats (`R5G6B5`, `A1R5G5B5`, `X1R5G5B5`, `A4R4G4B4`, `X4R4G4B4`) | no packed 16-bit formats | expanded to `rgba8unorm` on upload; such render targets are `rgba8unorm` (the application still sees its format; read-backs convert back) |
-| `R8G8B8`, `X8R8G8B8` | no 24-bit, no "X" formats | `rgba8unorm` with alpha set to 1 on upload (`A8R8G8B8` can be uploaded unconverted as `bgra8unorm`) |
-| `L8`, `A8`, `A8L8`, `A4L4` (luminance/alpha) | no luminance/alpha formats | expanded to `rgba8unorm` on upload (alternative: `r8unorm`/`rg8unorm` plus a per-stage swizzle in the program key) |
+| `A8R8G8B8` | | `bgra8unorm`, uploaded unchanged (same byte order) |
+| `X8R8G8B8` | no "X" formats | `bgra8unorm` with alpha set to 255 on upload |
+| `R8G8B8`, 16-bit colour (`R5G6B5`, `A1R5G5B5`, `X1R5G5B5`, `A4R4G4B4`, `X4R4G4B4`), `L8`, `A8`, `A8L8`, `A4L4` | no 24-bit, packed 16-bit, luminance or alpha formats | expanded to `bgra8unorm` on upload (`UnpackPixel`: the same expansion as the WebGL2 path, `A8` reads (0, 0, 0, a) like `GL_ALPHA`); 16-bit render targets are `bgra8unorm` (read-backs convert back to the surface format) |
 | `V8U8`, `Q8W8V8U8` | | `rg8snorm`, `rgba8snorm` |
-| DXT1-5 | `bc1/bc2/bc3-rgba-unorm` behind the optional feature `texture-compression-bc` | requested at `requestDevice`; without it the existing CPU decoder (`DecodeDXT`) produces RGBA8, as for WebGL2 without S3TC |
-| Depth formats | `depth16unorm`, `depth24plus`, `depth24plus-stencil8`, `depth32float` | `D16` -> `depth16unorm`; `D24X8`, `D32` -> `depth24plus`; `D24S8`, `D24X4S4`, `D15S1` -> `depth24plus-stencil8`; lockable depth is not readable (as today) |
-| Constant vertex attributes (inputs the vertex format does not provide read 0,0,0,1) | every shader input needs a buffer | the WGSL emitter declares only the attributes of the vertex layout and uses (0,0,0,1) for the others, so the program key gains the mask of provided attributes |
-| Vertex strides/offsets not multiple of 4 | required to be multiples of 4 | such streams are repacked on the CPU (rare: Direct3D 8 vertex formats are float/DWORD sized) |
-| Flat shading (first vertex) | `@interpolate(flat)` uses the first vertex, like Direct3D | none needed (WebGL2 needs `WEBGL_provoking_vertex` or the triangle rotation) |
-| Base vertex for indexed draws | `drawIndexed(..., baseVertex)` | none needed |
-| Multisampling 2-16 samples | 1 or 4 samples | `D3DMULTISAMPLE_2_SAMPLES`/`4` -> 4, higher counts -> 4 (reported back like the WebGL2 clamp); resolve through `resolveTarget` |
-| Clear restricted to rectangles / the viewport | `loadOp: clear` clears the whole attachment | quad draw (see render passes) |
-| Alpha test, fog, user clip planes, texture coordinate generation, the stage cascade | no fixed function | generated shaders, as for WebGL2 (clip planes with `discard`, or `clip_distances` where available) |
-| Gamma ramp | | applied by the present pass, as for WebGL2 |
-| Synchronous read-back (`LockRect` on render targets, `GetFrontBuffer`) | `mapAsync` only | `copyTextureToBuffer`, submit, then wait for `mapAsync`: suspends the calling thread (JSPI, see section 5) |
-| Texture that is the current render target and also sampled | validation error | the stage gets the dummy texture (already the front end's rule) |
-| Explicit swap control (`DXWEBGL2_PRESENT_EXPLICIT`) | no commit; `wgpuSurfacePresent` is not supported by Emscripten | the frame is shown when the thread yields (the `OnFramePresented` hook with `emscripten_sleep(0)`, as needed with WebGL2 from a pthread) |
+| DXT1-5 | `bc1/bc2/bc3-rgba-unorm` behind `texture-compression-bc` | requested when the adapter has it; textures whose size is not a multiple of 4 (a WebGPU rule for BC) and volumes are decoded on the CPU (`DecodeDXT`) to `rgba8unorm`, as are all of them without the feature or with `dxwebgl2_SetDisableS3TC` |
+| Depth formats | `depth16unorm`, `depth24plus`, `depth24plus-stencil8` | `D16` -> `depth16unorm`; `D24X8`, `D32` -> `depth24plus`; `D24S8`, `D24X4S4`, `D15S1` -> `depth24plus-stencil8` |
+| Inputs the vertex format does not provide (GL reads (0,0,0,1)) | every shader input needs a buffer | the vertex stage is generated per input signature (section 4) and uses (0,0,0,1) for the others |
+| Integer vertex data (`UBYTE4`, `SHORT2`, `SHORT4` without normalization) | integer formats are read as integers | `uint8x4` / `sint16x2|4`, converted to float in the shader (the signature says which) |
+| Vertex strides that are not a multiple of 4 | `arrayStride` must be | the vertices are repacked through the stream ring (WebGL2 cannot draw them at all, see section 7) |
+| Flat shading | `@interpolate(flat)` takes the first vertex, like Direct3D | none needed |
+| Base vertex | `drawIndexed(..., baseVertex)` | none needed |
+| Multisampling 2-16 samples | 1 or 4 samples | 4 for every request (the front end reports the clamped type) |
+| Clear restricted to rectangles / the viewport, clears after draws | `loadOp: clear` clears the whole attachment at the start of a pass | quad (section 2) |
+| Depth buffer larger than the render target | attachments must have the same size | private depth buffer of the target's size |
+| Alpha test, fog, user clip planes, texture coordinate generation, the stage cascade | no fixed function | generated WGSL, as for WebGL2 (clip planes by `discard`) |
+| Gamma ramp | | applied by the present pass |
+| Synchronous read-back (`LockRect` on render targets, `GetFrontBuffer`, `CopyRects` from a render target) | `mapAsync` only | `copyTextureToBuffer`, submit, then wait for `mapAsync`: suspends the calling thread (JSPI, section 5) |
+| Texture that is the current render target and also sampled | validation error | the stage gets the white texture (the front end's rule) |
+| Explicit swap control | no commit | the frame is shown when the thread yields (as WebGL2 from a pthread) |
 
-Clip space and the "flipped" rendering need less work than with GL: WebGPU's depth range is [0, 1] like Direct3D's
-(no z remapping in the vertex stage) and its framebuffer y axis points down like Direct3D's, so the WGSL vertex
-epilogue does not negate y, `FrontFace` is inverted by the backend, and the present pass does not flip. The half
-pixel offset of Direct3D 8 pixel centres stays.
+Clip space: WebGPU's depth range is [0, 1] like Direct3D's (no z remapping) and its framebuffer y axis points down like
+Direct3D's, so the vertex stage does not negate y; the half pixel offset of Direct3D 8 pixel centres stays (`+x`, `-y`
+in clip space). Pre-transformed (`XYZRHW`) vertices are mapped with the same formulas, y downwards.
 
-## 4. Shader generation
+## 4. Shader generation (as implemented)
 
-WGSL emitters are added next to the GLSL ones and share everything that is not syntax:
-
-* the `ProgramKey` (plus the attribute mask above),
-* the token stream parsing of vs.1.1 / ps.1.x. The translators currently decode tokens straight into GLSL text; the
-  ROADMAP's milestone M2 ("split decode from emit": token stream -> `ShaderIR` -> emitter) is done first, the SM1 GLSL
-  output staying byte-identical, then a WGSL emitter is added on the IR. The Direct3D 9 SM2/3 decoder later feeds both.
-* the fixed-function generator (`fixedfunction.cpp`) gets its emission split the same way: the decisions (which
-  lights, which texture coordinates, the stage cascade) are shared, the expressions are emitted per language.
-
-WGSL specifics the emitter has to respect: uniforms are struct members in bind group 0, textures and samplers are
-separate bindings, `textureSample` only in uniform control flow (the generated code samples unconditionally, alpha
-test discards after sampling; dynamic branches use `textureSampleLevel`/`textureSampleGrad`), no point size output
-(sprites are emulated), clip-space conventions as described above, `@builtin(front_facing)` for `vFace` (SM3).
+* **Fixed function**: `core/fixedfunction_wgsl.cpp` generates the WGSL vertex and fragment stages from the
+  `ProgramKey` with the decisions of the GLSL generator (`core/fixedfunction.cpp`): lights, fog, texture coordinate
+  generation and transforms, the stage cascade, specular, alpha test, clip planes, point sizes. The expressions of the
+  stage cascade are shared (`StageArgExpr`, `StageOpExpr`, emitting either language; the GLSL output is byte-identical,
+  the WebGL2 frame hashes did not change). `core/wgsl.h` holds the conventions both stages and the shader translators
+  share: the uniform struct, the varyings struct (`c0`, `c1`, fog and point sprite coordinate in one vector, clip
+  distances in two, `t0..t7`; at most 13 locations of WebGPU's 16), the texture bindings.
+* **Vertex input signature**: WGSL needs a buffer for every vertex input and reads integer formats as integers, so
+  the vertex module depends on which registers the layout provides and with which type (2 bits per `D3DVSDE_*`
+  register). The program key was not extended (that would have split WebGL2's programs): a WebGPU program keeps one
+  vertex module per signature, created when a draw first uses it; the uniform layout does not depend on it.
+* **Shaders**: `core/shader_wgsl.cpp` translates vs.1.1 and ps.1.0-1.4 to WGSL from the same decoding as the GLSL
+  translators: the token parameters (`DecodeParam`, `OperandCount`) and, for pixel shaders, the decoded instruction
+  list of the shader object (`PixelShaderObject::Impl`, moved to `shader_internal.h`); the vertex shader WGSL emitter
+  re-reads the stored token stream. The GLSL translators are unchanged. A full `ShaderIR` (ROADMAP M2) is still the
+  way to add shader model 2/3 to both.
+* WGSL specifics handled: no swizzle assignment (masked writes go component by component), no ternary operator
+  (`select`), `textureSample` only in uniform control flow (samples are never conditional: `texkill` records the kill
+  and discards at the end, clip planes and the alpha test discard after the samples, the `texm3x3pad` sequence is
+  resolved while generating), `frag_depth` for `texdepth` / `texm3x2depth`, names that do not collide with the
+  `t#` registers.
+* Compilation errors arrive asynchronously in WebGPU (an invalid pipeline then invalidates the frame's command
+  buffer); with `dxwebgl2_SetDebug(1)` every module is checked right away (an error scope, waited for) and its source
+  logged. Validation errors are logged (`[dxWebGL2] WebGPU validation error: ...`) and fail the test runners.
 
 ## 5. Threading, presentation and asynchrony
 
-Verified in this environment (headless Chromium from `/opt/pw-browsers/chromium`, localhost page):
+Verified in this environment (headless Chromium from `/opt/pw-browsers/chromium`): WebGPU is exposed with
+`--enable-unsafe-webgpu --enable-features=Vulkan --use-vulkan=swiftshader --use-webgpu-adapter=swiftshader
+--use-angle=swiftshader` (adapter `google swiftshader`, with `texture-compression-bc`), on the main thread and in a
+dedicated worker rendering to a transferred `OffscreenCanvas` (the `-sPROXY_TO_PTHREAD` test programs); without the
+Vulkan flags `requestDevice` fails.
 
-* WebGPU is exposed with `--enable-unsafe-webgpu --enable-features=Vulkan --use-vulkan=swiftshader
-  --use-webgpu-adapter=swiftshader --use-angle=swiftshader`; the adapter reports vendor `google`, architecture
-  `swiftshader`.
-* It also works in a dedicated worker rendering to a transferred `OffscreenCanvas` (preferred canvas format
-  `bgra8unorm`), which is the situation of a `-sPROXY_TO_PTHREAD` application.
-* Without the Vulkan flags `requestDevice` fails with "A valid external Instance reference no longer exists".
-* Emscripten 6.0.11 compiles `#include <webgpu/webgpu.h>` with `--use-port=emdawnwebgpu`. Its `wgpuInstanceWaitAny`
-  (blocking on a future) is implemented only when the build can suspend (`-sASYNCIFY` or `-sJSPI`; otherwise it
-  aborts), `wgpuSurfacePresent` is not supported (frames are presented when the thread returns to the event loop).
+`requestAdapter`, `requestDevice` and `mapAsync` are asynchronous, `IDirect3D8::CreateDevice` and `LockRect` are not.
+**Decision (implemented): JSPI.** The calling thread waits in `wgpuInstanceWaitAny` (instance created with
+`TimedWaitAny`), which suspends it. The backend is only offered when the build can suspend (`emscripten_has_asyncify()`,
+JSPI or ASYNCIFY); otherwise the device uses WebGL2 and the reason is logged. Calls that wait must come from code that
+can suspend: a `-sPROXY_TO_PTHREAD` main, or `main` itself on the main thread (the examples create their device there).
+A read-back from a `requestAnimationFrame` callback on the main thread cannot wait: render from a pthread, or avoid
+read-backs there. Rendering itself never waits.
 
-`requestAdapter`, `requestDevice` and `mapAsync` are asynchronous, while `IDirect3D8::CreateDevice` and
-`LockRect` are synchronous. Options considered:
-
-1. **JSPI** (`-sJSPI`): the calling thread suspends in `wgpuInstanceWaitAny` until the promise settles. No cost for
-   code that does not suspend; Chromium (the supported browser) ships it; the test programs already link with
-   `-sJSPI` for the per-frame yield. Calls that may suspend must come from a JSPI-wrapped entry (main with
-   `-sPROXY_TO_PTHREAD`, or callbacks Emscripten wraps).
-2. **ASYNCIFY**: works in more browsers but instruments every function that can be on the stack during a suspension:
-   larger and slower code everywhere, for a library whose cost is per-call overhead.
-3. **Initialise in JavaScript before `main`** (a pre-created `GPUDevice` handed to the module): solves device creation
-   only; read-backs still need to wait, and Emscripten deprecates the pre-initialised device path.
-4. **Asynchronous read-back API**: not possible behind Direct3D 8's synchronous `Lock`.
-
-**Decision: JSPI.** The WebGPU backend is only offered when the build can suspend (`emscripten_has_asyncify()` returns
-2 for JSPI, 1 for ASYNCIFY, which also works but is not recommended); `DXWEBGL2_BACKEND_AUTO` falls back to WebGL2
-otherwise, and an explicit `DXWEBGL2_BACKEND_WEBGPU` request logs why it is not available. Device creation waits for
-`requestAdapter`/`requestDevice` (with `texture-compression-bc` requested when the adapter has it), read-backs wait for
-`mapAsync`. Rendering itself never waits.
-
-Presentation: the canvas (`#canvas` or `dxwebgl2_SetCanvas`) gets a `webgpu` context configured with
-`navigator.gpu.getPreferredCanvasFormat()` (`bgra8unorm` here) and `alphaMode: 'opaque'`. The back buffer is a
-texture of its own (read-backs, `GetFrontBuffer`, the gamma ramp and multisampling need it); `Present` draws it into
-`getCurrentTexture()` with the gamma pass and submits. As with WebGL2 from a pthread, the browser shows the frame when
-the thread yields; applications that never return to the event loop yield from the `OnFramePresented` hook. Device
-loss: `GPUDevice.lost` sets the same event flag the WebGL2 backend's canvas listeners set, and the front end runs the
-same lost / not reset / `Reset()` sequence; `RestoreContext()` requests a new device.
+Device loss: `GPUDevice.lost` (and the test aid `GPUDevice.destroy()`, `dxwebgl2_LoseContextNow`) sets the event flag
+the front end polls; the device is reported lost once, then restorable (after `TestRestoreContext` for the test aid),
+and `Reset()` creates a new adapter and device (the adapter of a lost device cannot create another) and every
+`GpuObject` again from its system memory copy. The feature test's `contextloss` mode passes on WebGPU.
 
 ## 6. Run-time selection
 
-Public API (`include/dxwebgl2/dxwebgl2.h`, implemented):
-
 ```c
 enum dxwebgl2_Backend {
-    DXWEBGL2_BACKEND_AUTO = 0,     /* WebGPU when available, WebGL2 otherwise (default; WebGL2 until step 2) */
+    DXWEBGL2_BACKEND_AUTO = 0,     /* default: WebGL2 for now */
     DXWEBGL2_BACKEND_WEBGL2 = 1,
-    DXWEBGL2_BACKEND_WEBGPU = 2,   /* not implemented yet: logs a message and uses WebGL2 */
+    DXWEBGL2_BACKEND_WEBGPU = 2,   /* needs DXWEBGL2_WEBGPU=ON and -sJSPI; otherwise WebGL2 with a logged reason */
 };
-void dxwebgl2_SetBackend(int backend);   /* before CreateDevice() */
-int dxwebgl2_GetBackend(void);           /* backend of the device created last; AUTO before the first device */
+void dxwebgl2_SetBackend(int backend);   /* before CreateDevice(); also -dxwebgl2-backend=auto|webgl2|webgpu */
+int dxwebgl2_GetBackend(void);           /* backend of the device created last */
 ```
 
-`CreateBackend()` (`src/core/backend.cpp`) is the only place that decides. In step 2, `AUTO` picks WebGPU when the
-build can suspend, `navigator.gpu` exists on the rendering thread, an adapter is returned and `requestDevice`
-succeeds; any failure falls back to WebGL2 with a logged reason (and a diagnostics hit). A command line option
-`-dxwebgl2-backend=auto|webgl2|webgpu` will join the other `-dxwebgl2-*` options. `dxwebgl2_GetRendererString()`
-already reports the backend ("WebGL2: ..."; "WebGPU: <adapter>" later). The old `WebD3D8_*` compatibility names are
-not extended with these functions (they did not exist in that library).
+`CreateBackend()` (`src/core/backend.cpp`) decides: for WebGPU it creates the instance, adapter and device
+(`WebGPUBackend::Acquire`) and falls back to WebGL2 when any of it fails. `dxwebgl2_GetRendererString()` reports
+"WebGPU: google swiftshader". CMake: `DXWEBGL2_WEBGPU` (default `OFF`) compiles `src/core/webgpu` and adds
+`--use-port=emdawnwebgpu` to the link options of the library's users; `scripts/test.sh` builds with it.
 
-## 7. Testing
+## 7. Testing (as implemented)
 
-* **Every rendering test on both backends.** The runners (`run_test.mjs`, `run_features.mjs`, `run_regression.mjs`,
-  `run_example.mjs`) get `--backend=webgl2|webgpu`, passed to the page and to `dxwebgl2_SetBackend`; the browser is
-  started with the WebGPU flags listed in section 5 (harmless for WebGL2). `scripts/test.sh` runs each mode twice.
-  The test programs report the active backend (`dxwebgl2_GetBackend`) so that a silent fallback fails the WebGPU run.
-* **Probes**: the runtime test's probe table (`expected_probes.inc`, tolerance 6 per channel) is shared; where the
-  backends legitimately differ (rasterisation rules at polygon edges, DXT decoding, point sprite corners), a per-backend
-  override table records the difference with a comment.
-* **Image comparison between backends**: the screenshots of both runs are compared with a tolerance (per-pixel
-  channel difference and a maximum share of differing pixels), so that differences show up as a picture diff, not
-  only as a hash change.
-* **Frame hashes stay per backend**: `reference_hashes.json` gets one entry per (scene, backend); identical output
-  across GPUs is only expected within one backend on SwiftShader.
-* **Call counts**: the runtime test prints `STATS` lines (WebGL calls per category for the last frame and the whole
-  run, from `dxwebgl2_GetStats`); the WebGPU backend counts its API calls in the same categories (draw, state = pipeline
-  and dynamic state, bind = bind groups and buffers, upload = `writeBuffer`/`writeTexture`), plus pipeline and bind
-  group creations.
-* **Feature tests**: device loss (WebGPU: `GPUDevice.destroy()` as the test aid), multisampling (4x only), the
-  emulations of section 3 (fans, point sprites, 16-bit and luminance formats, border colour, rectangle clears,
-  read-backs) get dedicated checked scenes.
-* The node tests, the layering check (which enforces that only `src/core/gl` and later `src/core/webgpu` include a GPU
-  API) and the package consumers are backend independent.
+* Every runner takes `--backend=webgl2|webgpu` (`run_test.mjs` passes it to the page, `run_features.mjs` to every
+  mode, `run_regression.mjs` selects the hashes, `run_example.mjs` passes `-dxwebgl2-backend=` to the page) and every
+  browser starts with the WebGPU flags (they do not change WebGL2's pictures: the WebGL2 hashes are unchanged). The
+  test programs check that the device renders through the requested backend; WebGPU errors in the log fail a run.
+  `scripts/test.sh` runs the whole browser suite once per backend (`--backend webgl2|webgpu` for one).
+* **Frame hashes per backend**: `reference_hashes.json` has the WebGL2 hashes under the scene names (unchanged) and
+  the WebGPU ones under `webgpu:<scene>`.
+* **Picture comparison**: `tests/runner/compare_backends.mjs` renders the runtime test scenes with both backends and
+  compares the screenshots (tolerance 8 per channel; a scene fails when more than 0.5% of its pixels differ by more);
+  `--out` keeps the pictures and a difference picture per scene. `scripts/test.sh` runs it.
+* **Feature tests** for the emulations (both backends): `clears` (rectangles, after draws, depth and stencil
+  rectangles, several rectangles, the viewport), `primitives` (indexed fan with a base vertex, point lists from
+  buffers with and without indices, point sprite orientation, wireframe and point fill, a 22-byte stride), `formats`
+  (`X1R5G5B5`, `X4R4G4B4`, `R8G8B8`, `A4L4`, `X8R8G8B8` with alpha 0 in memory, DXT1 of 6x6), `updates` (a dynamic
+  vertex buffer rewritten with `DISCARD` and appended with `NOOVERWRITE` within a frame, a texture updated between two
+  draws, render targets of 32 and 16 bits read back, a lockable render target). Two checks are known to fail on WebGL2
+  and are reported as `XFAIL` there: WebGL rejects vertex strides that are not a multiple of the component size, and
+  S3TC textures whose size is not a multiple of 4 (they render black).
+* **Performance**: `d3d8_runtime_test --perf=N` draws N lit, textured quads per frame from a vertex buffer (world
+  matrix and material per draw, texture every 8 draws) and prints the CPU time per frame on the rendering thread and the
+  API calls per frame (the `STATS` categories count WebGPU calls for the WebGPU backend: draw = draws, state =
+  pipeline and dynamic state, bind = bind groups, vertex/index buffers and passes, upload = `writeBuffer` /
+  `writeTexture`, other = object creation and submits).
 
 ## 8. Step 1: what was done and how it was verified
 
@@ -296,13 +265,67 @@ not extended with these functions (they did not exist in that library).
   | `--scene2` | 144 (14/40/33/25/17/15) | 13223 | yes |
   | `--scene3` | 188 (15/34/72/19/48/0) | 17123 | yes |
 
-## 9. Next steps (step 2 onwards)
+## 9. Step 2: what was done and how it was verified
 
-1. `src/core/webgpu/`: device creation with JSPI, caps, back buffer and present pass, buffers, textures (format table
-   and conversions), samplers, render passes and clears, pipeline and bind group caches, uniform buffer ring, draws
-   (fan expansion), read-backs.
-2. ShaderIR split of the SM1 translators (GLSL output unchanged), WGSL emitters for the fixed-function pipeline and the
-   translated shaders.
-3. Point sprite emulation, 16-bit/luminance/X formats, DXT through `texture-compression-bc`, multisample clamp.
-4. Test runners with `--backend`, cross-backend image comparison, per-backend hashes; `AUTO` switched to prefer WebGPU
-   once the suites pass.
+* `src/core/webgpu/` (`wgpu.h`, `wgpu_backend.h/.cpp`, `wgpu_resources.cpp`, `wgpu_program.cpp`, `wgpu_draw.cpp`):
+  the backend of sections 2, 3 and 5.
+* `src/core/wgsl.h`, `src/core/fixedfunction_wgsl.cpp`, `src/core/shader_wgsl.cpp`: the WGSL generators (section 4).
+  Shared with GLSL: the stage cascade expressions, the decoded pixel shader instructions.
+* Front end: unchanged except the device messages naming the WebGPU device; `-dxwebgl2-backend=` among the command
+  line options; the examples pass their arguments to `dxwebgl2_ParseArguments` and link `-sJSPI` when the backend is
+  built.
+* WebGL2 unchanged: the frame hashes of the WebGL2 scenes are identical before and after.
+
+Results (headless Chromium 141, SwiftShader, `scripts/test.sh`):
+
+| Test | WebGL2 | WebGPU |
+|---|---|---|
+| runtime test, 8 modes (default, shaders, scene2, scene3, no-s3tc, reset, implicit, 600 frames from a non-yielding thread with `--yield`) | 8 pass (104/110 expectations, 13-24 probes) | 8 pass (same expectations and probes, tolerance 6) |
+| feature tests, 7 modes | all pass: basic 106 (+2 XFAIL), basic-ext 106 (+2), basic-nopv 106 (+2), basic-nos3tc 107 (+1), contextloss 19, msaa 10, msaa-off 10 | all pass: basic / basic-ext / basic-nopv / basic-nos3tc 108, contextloss 19, msaa 10, msaa-off 10 |
+| frame hashes | default `1d18ca44807a52b7`, shaders `ed22b76b734dad2a`, scene2 `7cf909c436852d70`, scene3 `dce88a9773c5c88d`, default-nos3tc `1d18ca44807a52b7` (unchanged) | default `72150f84d703cfff`, shaders `de40f7a50b002796`, scene2 `978e065802f7aefd`, scene3 `91c551c5fd217ded`, default-nos3tc `72150f84d703cfff` (BC sampling and the CPU decoder agree exactly) |
+| examples | 2 pass | 2 pass (identical pictures) |
+
+Picture comparison WebGL2 / WebGPU (screenshots of the canvas, 640x480):
+
+| Scene | max | mean | pixels > 8 |
+|---|---|---|---|
+| default | 1 | 0.007 | 0 |
+| shaders | 1 | 0.007 | 0 |
+| scene2 | 223 | 0.309 | 481 (0.157%) |
+| scene3 | 1 | 0.044 | 0 |
+| default-nos3tc | 1 | 0.007 | 0 |
+
+The differences of scene2 are rasterization ties, not shading: the wireframe sphere (line pixels step differently) and
+the diagonal of a flat-shaded quad whose edge passes exactly through pixel centres (which triangle owns them). WebGL2
+renders the image upside down (y up), so the top-left fill rule and the line steps fall on the other side; WebGPU's
+framebuffer y points down like Direct3D's, so WebGPU follows Direct3D there. Elsewhere the backends agree to 1/255
+(rounding).
+
+Performance (`--perf=N`, CPU time per frame on the rendering pthread, 60 frames after 10 warm-up frames, SwiftShader,
+this machine, two runs each; the averages vary from run to run, the WebGL2 ones because of frames in which the thread
+waits for the GPU process):
+
+| draws per frame | WebGL2: average / best ms, API calls | WebGPU: average / best ms, API calls, bytes uploaded |
+|---|---|---|
+| 100 | 3.1-3.5 / 0.16-0.18, 330 | 0.7-1.5 / 0.26-0.27, 230, 51 KB |
+| 500 | 14-21 / 0.58, 1580 | 2.2-3.4 / 0.98-1.04, 1080, 256 KB |
+| 2000 | 64-70 / 4.7-6.8, 6267 | 6.0-8.5 / 3.8-3.9, 4303, 1 MB |
+
+So the best frames cost about 1.2 us per draw on WebGL2 and 2 us on WebGPU (more JavaScript per call in the bindings),
+but the WebGPU frames do not stall: on average a frame of WebGPU draws costs 4 to 10 times less here. GPU time is not
+measured (SwiftShader runs in the GPU process).
+
+Per draw the WebGPU backend makes about 2 calls (bind group 0 at the block's offset, the draw; the texture bind group
+when it changes), WebGL2 about 3 (uniforms, texture bind, draw); the uniform data goes up once per frame (512 bytes per
+draw here: the program's block when the world matrix or the material changed).
+
+## 10. Next steps
+
+1. Decide `DXWEBGL2_BACKEND_AUTO`: prefer WebGPU when the build can suspend and the browser offers an adapter (the
+   suites pass), or keep WebGL2 until the game was checked on real data with both.
+2. Dynamic buffers: rename (a new `GPUBuffer` per rewrite of a buffer used in the frame, recycled after the submit)
+   instead of submitting; NOOVERWRITE appends could skip both when the written range was not drawn from.
+3. `ShaderIR` (ROADMAP M2) for both shader languages, before shader model 2/3.
+4. Optional features: `clip-distances` for user clip planes, `texture-component-swizzle` for luminance / alpha formats
+   (no expansion), timestamp queries for GPU timings.
+5. Strip draws from index buffers: WebGPU restarts strips at index 0xFFFF / 0xFFFFFFFF (Direct3D does not).

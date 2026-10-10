@@ -6,7 +6,7 @@
  * See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
  */
 /*
- * Checked feature tests of the Direct3D 8 on WebGL2 library.
+ * Checked feature tests of the Direct3D 8 library (on the WebGL2 backend, or the WebGPU one with --backend=webgpu).
  *
  * Every case draws through the plain D3D8 API, reads the back buffer and compares pixels (or counters)
  * with values computed by hand; it prints "CHECK <case> <label> PASS|FAIL". Cases that need a fresh
@@ -30,6 +30,7 @@
 #include <vector>
 
 static bool g_msaaDisabled = false;
+static int g_wantBackend = DXWEBGL2_BACKEND_WEBGL2; // --backend=webgpu: the device must render through WebGPU
 static IDirect3D8 *g_d3d;
 static IDirect3DDevice8 *g_dev;
 static int g_pass = 0, g_fail = 0;
@@ -81,6 +82,21 @@ static bool ColorNear(DWORD got, DWORD want, int tol)
     for (int s = 0; s <= 16; s += 8)
         if (std::abs((int)((got >> s) & 255) - (int)((want >> s) & 255)) > tol) return false;
     return true;
+}
+
+/// A check that fails on WebGL2 for a known reason of that backend: reported as XFAIL there (not a failure).
+static bool ExpectKnown(const char *label, int x, int y, DWORD rgb, const char *webgl2Reason, int tol = 4)
+{
+    const DWORD got = g_px[y * W + x] & 0xFFFFFF;
+    const bool ok = ColorNear(got, rgb, tol);
+    if (!ok && dxwebgl2_GetBackend() == DXWEBGL2_BACKEND_WEBGL2)
+    {
+        printf("CHECK %s %s XFAIL (%d,%d) got %06x want %06x: known WebGL2 limitation, %s\n", g_case, label, x, y, (unsigned)got,
+               (unsigned)rgb, webgl2Reason);
+        return false;
+    }
+    Report(label, ok, "(%d,%d) got %06x want %06x", x, y, (unsigned)got, (unsigned)rgb);
+    return ok;
 }
 
 static bool Expect(const char *label, int x, int y, DWORD rgb, int tol = 4)
@@ -952,6 +968,375 @@ static void CaseInlineVertexShaders()
 }
 
 //------------------------------------------------------------------------------
+// Cases: what a backend emulates (docs/WEBGPU.md, section 3). The pictures must be the same on every backend:
+// clears of rectangles and after draws, triangle fans and point lists from buffers, point sprites, the fill modes,
+// strides that are not a multiple of 4, the 16/24-bit and luminance formats, writes into buffers and textures that
+// were drawn with earlier in the frame, and read-backs of render targets.
+//------------------------------------------------------------------------------
+static void Quad(float x0, float y0, float x1, float y1, float z, DWORD color)
+{
+    g_dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG2);
+    g_dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+    g_dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2);
+    g_dev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+    Rect(x0, y0, x1, y1, z, color);
+}
+
+static void CaseClears()
+{
+    g_case = "clears";
+    BaseStates();
+    ClearScreen(0xFF101010);
+    CHECK_HR(g_dev->BeginScene());
+    // A rectangle of the target.
+    D3DRECT r1 = {50, 50, 150, 150};
+    CHECK_HR(g_dev->Clear(1, &r1, D3DCLEAR_TARGET, 0xFFFF0000, 1.0f, 0));
+    // A clear after a draw, overlapping it.
+    Quad(200, 50, 300, 150, 0.5f, 0xFF00FF00);
+    D3DRECT r2 = {250, 100, 350, 200};
+    CHECK_HR(g_dev->Clear(1, &r2, D3DCLEAR_TARGET, 0xFF0000FF, 1.0f, 0));
+    // Depth of a rectangle: a quad at z 0.4 is hidden where the depth was cleared to 0.2.
+    D3DRECT r3 = {400, 50, 500, 150};
+    CHECK_HR(g_dev->Clear(1, &r3, D3DCLEAR_ZBUFFER, 0, 0.2f, 0));
+    g_dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    Quad(380, 30, 520, 170, 0.4f, 0xFFFF0000);
+    g_dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+    // Stencil of a rectangle: a quad with the stencil test passes only there.
+    D3DRECT r4 = {50, 250, 150, 350};
+    CHECK_HR(g_dev->Clear(1, &r4, D3DCLEAR_STENCIL, 0, 1.0f, 5));
+    g_dev->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+    g_dev->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_EQUAL);
+    g_dev->SetRenderState(D3DRS_STENCILREF, 5);
+    g_dev->SetRenderState(D3DRS_STENCILMASK, 0xFF);
+    Quad(30, 230, 170, 370, 0.5f, 0xFFFFFF00);
+    g_dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    // Two rectangles in one call.
+    D3DRECT r5[2] = {{200, 250, 240, 290}, {260, 250, 300, 290}};
+    CHECK_HR(g_dev->Clear(2, r5, D3DCLEAR_TARGET, 0xFFFF00FF, 1.0f, 0));
+    // Without rectangles a clear covers the viewport.
+    D3DVIEWPORT8 vp = {400, 250, 100, 100, 0.0f, 1.0f};
+    g_dev->SetViewport(&vp);
+    CHECK_HR(g_dev->Clear(0, nullptr, D3DCLEAR_TARGET, 0xFF00FFFF, 1.0f, 0));
+    D3DVIEWPORT8 full = {0, 0, (DWORD)W, (DWORD)H, 0.0f, 1.0f};
+    g_dev->SetViewport(&full);
+    CHECK_HR(g_dev->EndScene());
+    Grab();
+    Expect("rectangle cleared", 100, 100, 0xFF0000);
+    Expect("outside the rectangle untouched", 160, 100, 0x101010, 2);
+    Expect("draw before a clear stays outside it", 225, 75, 0x00FF00);
+    Expect("clear after a draw covers it", 275, 125, 0x0000FF);
+    Expect("clear after a draw outside the draw", 325, 175, 0x0000FF);
+    Expect("depth rectangle hides the quad behind it", 450, 100, 0x101010, 2);
+    Expect("quad drawn outside the depth rectangle", 390, 40, 0xFF0000);
+    Expect("stencil rectangle lets the quad through", 100, 300, 0xFFFF00);
+    Expect("stencil test fails outside the rectangle", 40, 240, 0x101010, 2);
+    Expect("first of two rectangles", 220, 270, 0xFF00FF);
+    Expect("between two rectangles untouched", 250, 270, 0x101010, 2);
+    Expect("second of two rectangles", 280, 270, 0xFF00FF);
+    Expect("clear without rectangles covers the viewport", 450, 300, 0x00FFFF);
+    Expect("clear without rectangles leaves the rest", 390, 300, 0x101010, 2);
+}
+
+struct XV { float x, y, z, rhw; DWORD color; };
+
+static void CasePrimitives()
+{
+    g_case = "primitives";
+    BaseStates();
+    ClearScreen(0xFF101010);
+    g_dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG2);
+    g_dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+    // A vertex buffer: 4 unused vertices, then a fan (a square around (100,100)), then 4 points.
+    IDirect3DVertexBuffer8 *vb = nullptr;
+    IDirect3DIndexBuffer8 *ib = nullptr;
+    CHECK_HR(g_dev->CreateVertexBuffer(16 * sizeof(XV), D3DUSAGE_WRITEONLY, CV_FVF, D3DPOOL_MANAGED, &vb));
+    CHECK_HR(g_dev->CreateIndexBuffer(16 * 2, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_MANAGED, &ib));
+    XV *v;
+    CHECK_HR(vb->Lock(0, 0, (BYTE **)&v, 0));
+    for (int i = 0; i < 4; ++i) v[i] = {0, 0, 0.5f, 1, 0xFFFFFFFF};
+    v[4] = {100, 100, 0.5f, 1, 0xFF00FF00}; // centre
+    v[5] = {60, 60, 0.5f, 1, 0xFF00FF00};
+    v[6] = {140, 60, 0.5f, 1, 0xFF00FF00};
+    v[7] = {140, 140, 0.5f, 1, 0xFF00FF00};
+    v[8] = {60, 140, 0.5f, 1, 0xFF00FF00};
+    v[9] = {60, 60, 0.5f, 1, 0xFF00FF00};
+    for (int i = 0; i < 4; ++i) v[10 + i] = {200.0f + i * 30, 100, 0.5f, 1, 0xFFFF8000};
+    v[14] = v[15] = {0, 0, 0.5f, 1, 0};
+    CHECK_HR(vb->Unlock());
+    WORD *ix;
+    CHECK_HR(ib->Lock(0, 0, (BYTE **)&ix, 0));
+    const WORD fan[6] = {0, 1, 2, 3, 4, 5};     // relative to base vertex 4
+    const WORD pts[2] = {9, 7};                 // points 3 and 1 of the row, through base vertex 4
+    memcpy(ix, fan, sizeof fan);
+    memcpy(ix + 6, pts, sizeof pts);
+    CHECK_HR(ib->Unlock());
+    CHECK_HR(g_dev->BeginScene());
+    g_dev->SetVertexShader(CV_FVF);
+    CHECK_HR(g_dev->SetStreamSource(0, vb, sizeof(XV)));
+    CHECK_HR(g_dev->SetIndices(ib, 4));
+    CHECK_HR(g_dev->DrawIndexedPrimitive(D3DPT_TRIANGLEFAN, 0, 6, 0, 4));
+    // Points of 8 pixels from the buffer: two without indices, one through the index buffer and the base vertex.
+    g_dev->SetRenderState(D3DRS_POINTSIZE, FloatToDword(8.0f));
+    CHECK_HR(g_dev->DrawPrimitive(D3DPT_POINTLIST, 10, 2));         // points 0 and 1 of the row
+    CHECK_HR(g_dev->DrawIndexedPrimitive(D3DPT_POINTLIST, 0, 10, 6, 1)); // index 9 -> vertex 13 (point 3)
+    g_dev->SetRenderState(D3DRS_POINTSIZE, FloatToDword(1.0f));
+    g_dev->SetStreamSource(0, nullptr, 0);
+    g_dev->SetIndices(nullptr, 0);
+
+    // Point sprite: the texture's corners in the sprite's corners (u right, v down).
+    IDirect3DTexture8 *quad = nullptr;
+    CHECK_HR(g_dev->CreateTexture(2, 2, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &quad));
+    if (quad)
+    {
+        D3DLOCKED_RECT lr;
+        CHECK_HR(quad->LockRect(0, &lr, nullptr, 0));
+        ((DWORD *)lr.pBits)[0] = 0xFFFF0000; ((DWORD *)lr.pBits)[1] = 0xFF00FF00;
+        ((DWORD *)((BYTE *)lr.pBits + lr.Pitch))[0] = 0xFF0000FF; ((DWORD *)((BYTE *)lr.pBits + lr.Pitch))[1] = 0xFFFFFFFF;
+        CHECK_HR(quad->UnlockRect(0));
+    }
+    g_dev->SetTexture(0, quad);
+    g_dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    g_dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    g_dev->SetRenderState(D3DRS_POINTSPRITEENABLE, TRUE);
+    g_dev->SetRenderState(D3DRS_POINTSIZE, FloatToDword(32.0f));
+    XV sprite = {400, 100, 0.5f, 1, 0xFFFFFFFF};
+    CHECK_HR(g_dev->DrawPrimitiveUP(D3DPT_POINTLIST, 1, &sprite, sizeof(XV)));
+    g_dev->SetRenderState(D3DRS_POINTSPRITEENABLE, FALSE);
+    g_dev->SetRenderState(D3DRS_POINTSIZE, FloatToDword(1.0f));
+    g_dev->SetTexture(0, nullptr);
+    g_dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG2);
+
+    // Wireframe: the edges of a triangle, not its inside; point fill: its corners.
+    g_dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_WIREFRAME);
+    XV tri[3] = {{50, 250, 0.5f, 1, 0xFFFFFF00}, {150, 250, 0.5f, 1, 0xFFFFFF00}, {50, 350, 0.5f, 1, 0xFFFFFF00}};
+    CHECK_HR(g_dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, tri, sizeof(XV)));
+    g_dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_POINT);
+    XV tri2[3] = {{200, 250, 0.5f, 1, 0xFF00FFFF}, {300, 250, 0.5f, 1, 0xFF00FFFF}, {200, 350, 0.5f, 1, 0xFF00FFFF}};
+    CHECK_HR(g_dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, tri2, sizeof(XV)));
+    g_dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+
+    // A stride that is not a multiple of 4 (22 bytes: the vertex and two padding bytes).
+    BYTE packed[3 * 22] = {};
+    const XV odd[3] = {{350, 250, 0.5f, 1, 0xFFFF00FF}, {450, 250, 0.5f, 1, 0xFFFF00FF}, {350, 350, 0.5f, 1, 0xFFFF00FF}};
+    for (int i = 0; i < 3; ++i) memcpy(packed + i * 22, &odd[i], sizeof(XV));
+    CHECK_HR(g_dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, packed, 22));
+    CHECK_HR(g_dev->EndScene());
+    Grab();
+    Expect("indexed fan with a base vertex", 100, 80, 0x00FF00);
+    Expect("indexed fan, last triangle", 70, 100, 0x00FF00);
+    Expect("outside the fan", 50, 100, 0x101010, 2);
+    Expect("point from a buffer (first vertex 10)", 200, 100, 0xFF8000);
+    Expect("point from a buffer (second)", 230, 100, 0xFF8000);
+    Expect("8 pixel point covers its square", 203, 97, 0xFF8000);
+    Expect("indexed point list with a base vertex", 290, 100, 0xFF8000);
+    Expect("point not drawn", 260, 100, 0x101010, 2);
+    Expect("sprite top left is texel (0,0)", 390, 90, 0xFF0000);
+    Expect("sprite top right is texel (1,0)", 410, 90, 0x00FF00);
+    Expect("sprite bottom left is texel (0,1)", 390, 110, 0x0000FF);
+    Expect("sprite bottom right is texel (1,1)", 410, 110, 0xFFFFFF);
+    Expect("wireframe: top edge", 100, 250, 0xFFFF00);
+    Expect("wireframe: left edge", 50, 300, 0xFFFF00);
+    Expect("wireframe: no inside", 70, 270, 0x101010, 2);
+    Expect("point fill: a corner", 200, 250, 0x00FFFF);
+    Expect("point fill: no inside", 220, 270, 0x101010, 2);
+    ExpectKnown("stride of 22 bytes", 370, 270, 0xFF00FF, "WebGL needs vertex strides that are a multiple of the component size");
+    vb->Release();
+    ib->Release();
+    if (quad) quad->Release();
+}
+
+static void CaseFormats()
+{
+    g_case = "formats";
+    BaseStates();
+    ClearScreen(0xFF101010);
+    struct F { D3DFORMAT fmt; const char *name; DWORD expect; };
+    // The texel is written in the format's own layout; the expected colour is what sampling it returns.
+    const F formats[] = {
+        {D3DFMT_X1R5G5B5, "X1R5G5B5", 0x3173C5}, {D3DFMT_X4R4G4B4, "X4R4G4B4", 0x3377CC}, {D3DFMT_R8G8B8, "R8G8B8", 0x3070C0},
+        {D3DFMT_A4L4, "A4L4", 0xAAAAAA},         {D3DFMT_X8R8G8B8, "X8R8G8B8", 0x3070C0}, {D3DFMT_DXT1, "DXT1 6x6", 0x3171C6},
+    };
+    CHECK_HR(g_dev->BeginScene());
+    g_dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    g_dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    std::vector<IDirect3DTexture8 *> keep;
+    int n = 0;
+    for (const F &f : formats)
+    {
+        const UINT size = f.fmt == D3DFMT_DXT1 ? 6 : 4;
+        IDirect3DTexture8 *t = nullptr;
+        if (FAILED(g_dev->CreateTexture(size, size, 1, 0, f.fmt, D3DPOOL_MANAGED, &t)) || !t)
+        {
+            Report(f.name, false, "CreateTexture failed");
+            continue;
+        }
+        D3DLOCKED_RECT lr;
+        CHECK_HR(t->LockRect(0, &lr, nullptr, 0));
+        for (UINT y = 0; y < (f.fmt == D3DFMT_DXT1 ? 2u : size); ++y)
+            for (UINT x = 0; x < (f.fmt == D3DFMT_DXT1 ? 2u : size); ++x)
+            {
+                BYTE *p = (BYTE *)lr.pBits + y * lr.Pitch;
+                switch (f.fmt)
+                {
+                case D3DFMT_X1R5G5B5: ((WORD *)p)[x] = (WORD)((0x30 >> 3) << 10 | (0x70 >> 3) << 5 | (0xC0 >> 3)); break;
+                case D3DFMT_X4R4G4B4: ((WORD *)p)[x] = (WORD)(3 << 8 | 7 << 4 | 12); break;
+                case D3DFMT_R8G8B8: p[x * 3] = 0xC0; p[x * 3 + 1] = 0x70; p[x * 3 + 2] = 0x30; break;
+                case D3DFMT_A4L4: p[x] = 0xFA; break;
+                case D3DFMT_X8R8G8B8: ((DWORD *)p)[x] = 0x003070C0; break; // alpha 0 must read as 1
+                case D3DFMT_DXT1:
+                {
+                    // One block per 4x4: both endpoints the same 565 colour, every index 0.
+                    const WORD c = (WORD)((0x30 >> 3) << 11 | (0x70 >> 2) << 5 | (0xC0 >> 3));
+                    BYTE *b = p + x * 8;
+                    b[0] = (BYTE)c; b[1] = (BYTE)(c >> 8); b[2] = (BYTE)c; b[3] = (BYTE)(c >> 8);
+                    b[4] = b[5] = b[6] = b[7] = 0;
+                    break;
+                }
+                default: break;
+                }
+            }
+        CHECK_HR(t->UnlockRect(0));
+        g_dev->SetTexture(0, t);
+        const float x0 = 20.0f + (n % 6) * 100, y0 = 20.0f;
+        Rect(x0, y0, x0 + 80, y0 + 80, 0.5f, 0xFFFFFFFF);
+        keep.push_back(t);
+        ++n;
+    }
+    // X8R8G8B8 with alpha 0 in memory: alpha blending must see an opaque texel.
+    if (keep.size() > 4)
+    {
+        g_dev->SetTexture(0, keep[4]);
+        g_dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+        g_dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+        g_dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+        Rect(20, 150, 100, 230, 0.5f, 0xFFFFFFFF);
+        g_dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    }
+    g_dev->SetTexture(0, nullptr);
+    CHECK_HR(g_dev->EndScene());
+    Grab();
+    n = 0;
+    for (const F &f : formats)
+    {
+        char label[64];
+        snprintf(label, sizeof label, "%s sampled", f.name);
+        if (f.fmt == D3DFMT_DXT1)
+            ExpectKnown(label, 60 + (n % 6) * 100, 60, f.expect, "S3TC textures need a size that is a multiple of 4", 6);
+        else
+            Expect(label, 60 + (n % 6) * 100, 60, f.expect, 6);
+        ++n;
+    }
+    Expect("X8R8G8B8 blends as opaque", 60, 190, 0x3070C0, 6);
+    for (IDirect3DTexture8 *t : keep) t->Release();
+}
+
+static void CaseUpdates()
+{
+    g_case = "updates";
+    BaseStates();
+    ClearScreen(0xFF101010);
+    g_dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG2);
+    g_dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+    // A dynamic vertex buffer written again (DISCARD) after a draw that used it, then appended to (NOOVERWRITE).
+    IDirect3DVertexBuffer8 *vb = nullptr;
+    CHECK_HR(g_dev->CreateVertexBuffer(8 * sizeof(XV), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, CV_FVF, D3DPOOL_DEFAULT, &vb));
+    auto fill = [&](UINT first, float x0, DWORD color, DWORD flags) {
+        XV *v;
+        CHECK_HR(vb->Lock(first * sizeof(XV), 4 * sizeof(XV), (BYTE **)&v, flags));
+        v[0] = {x0, 50, 0.5f, 1, color}; v[1] = {x0 + 80, 50, 0.5f, 1, color};
+        v[2] = {x0, 130, 0.5f, 1, color}; v[3] = {x0 + 80, 130, 0.5f, 1, color};
+        CHECK_HR(vb->Unlock());
+    };
+    CHECK_HR(g_dev->BeginScene());
+    g_dev->SetVertexShader(CV_FVF);
+    CHECK_HR(g_dev->SetStreamSource(0, vb, sizeof(XV)));
+    fill(0, 20, 0xFFFF0000, D3DLOCK_DISCARD);
+    CHECK_HR(g_dev->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2));
+    fill(0, 120, 0xFF00FF00, D3DLOCK_DISCARD);
+    CHECK_HR(g_dev->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2));
+    fill(4, 220, 0xFF0000FF, D3DLOCK_NOOVERWRITE);
+    CHECK_HR(g_dev->DrawPrimitive(D3DPT_TRIANGLESTRIP, 4, 2));
+    g_dev->SetStreamSource(0, nullptr, 0);
+
+    // A texture drawn with, then written, then drawn with again.
+    IDirect3DTexture8 *t = MakeSolid(4, 4, 0xFFFFFF00);
+    g_dev->SetTexture(0, t);
+    g_dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    Rect(20, 200, 100, 280, 0.5f, 0xFFFFFFFF);
+    D3DLOCKED_RECT lr;
+    CHECK_HR(t->LockRect(0, &lr, nullptr, 0));
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x) ((DWORD *)((BYTE *)lr.pBits + y * lr.Pitch))[x] = 0xFF00FFFF;
+    CHECK_HR(t->UnlockRect(0));
+    Rect(120, 200, 200, 280, 0.5f, 0xFFFFFFFF);
+    g_dev->SetTexture(0, nullptr);
+    CHECK_HR(g_dev->EndScene());
+
+    // Render targets read back: a texture level (CopyRects to an image surface) and a lockable surface, 32 and 16 bit.
+    IDirect3DSurface8 *bb = nullptr, *bbDepth = nullptr;
+    CHECK_HR(g_dev->GetRenderTarget(&bb));
+    CHECK_HR(g_dev->GetDepthStencilSurface(&bbDepth));
+    const D3DFORMAT rtFormats[2] = {D3DFMT_A8R8G8B8, D3DFMT_R5G6B5};
+    for (int k = 0; k < 2; ++k)
+    {
+        IDirect3DTexture8 *rt = nullptr;
+        CHECK_HR(g_dev->CreateTexture(32, 32, 1, D3DUSAGE_RENDERTARGET, rtFormats[k], D3DPOOL_DEFAULT, &rt));
+        if (!rt) continue;
+        IDirect3DSurface8 *s = nullptr;
+        CHECK_HR(rt->GetSurfaceLevel(0, &s));
+        CHECK_HR(g_dev->SetRenderTarget(s, nullptr));
+        CHECK_HR(g_dev->Clear(0, nullptr, D3DCLEAR_TARGET, 0xFF204080, 1.0f, 0));
+        CHECK_HR(g_dev->BeginScene());
+        Quad(8, 8, 24, 24, 0.5f, 0xFFF0C010);
+        CHECK_HR(g_dev->EndScene());
+        CHECK_HR(g_dev->SetRenderTarget(bb, bbDepth));
+        IDirect3DSurface8 *img = nullptr;
+        CHECK_HR(g_dev->CreateImageSurface(32, 32, D3DFMT_A8R8G8B8, &img));
+        if (img)
+        {
+            CHECK_HR(g_dev->CopyRects(s, nullptr, 0, img, nullptr));
+            D3DLOCKED_RECT ir;
+            CHECK_HR(img->LockRect(&ir, nullptr, D3DLOCK_READONLY));
+            const DWORD edge = ((DWORD *)ir.pBits)[0] & 0xFFFFFF, mid = ((DWORD *)((BYTE *)ir.pBits + 16 * ir.Pitch))[16] & 0xFFFFFF;
+            CHECK_HR(img->UnlockRect());
+            char l1[64], l2[64];
+            snprintf(l1, sizeof l1, "%s render target read back: cleared", k ? "R5G6B5" : "A8R8G8B8");
+            snprintf(l2, sizeof l2, "%s render target read back: drawn", k ? "R5G6B5" : "A8R8G8B8");
+            Report(l1, ColorNear(edge, 0x204080, k ? 8 : 2), "got %06x", (unsigned)edge);
+            Report(l2, ColorNear(mid, 0xF0C010, k ? 8 : 2), "got %06x", (unsigned)mid);
+            img->Release();
+        }
+        s->Release();
+        rt->Release();
+    }
+    IDirect3DSurface8 *lockable = nullptr;
+    CHECK_HR(g_dev->CreateRenderTarget(16, 16, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, TRUE, &lockable));
+    if (lockable)
+    {
+        CHECK_HR(g_dev->SetRenderTarget(lockable, nullptr));
+        CHECK_HR(g_dev->Clear(0, nullptr, D3DCLEAR_TARGET, 0xFF60A0E0, 1.0f, 0));
+        CHECK_HR(g_dev->SetRenderTarget(bb, bbDepth));
+        D3DLOCKED_RECT sr;
+        CHECK_HR(lockable->LockRect(&sr, nullptr, D3DLOCK_READONLY));
+        const DWORD c = ((DWORD *)((BYTE *)sr.pBits + 5 * sr.Pitch))[7] & 0xFFFFFF;
+        CHECK_HR(lockable->UnlockRect());
+        Report("lockable render target surface read back", ColorNear(c, 0x60A0E0, 2), "got %06x", (unsigned)c);
+        lockable->Release();
+    }
+    bb->Release();
+    bbDepth->Release();
+
+    Grab();
+    Expect("first contents of the dynamic buffer", 60, 90, 0xFF0000);
+    Expect("rewritten (DISCARD) contents", 160, 90, 0x00FF00);
+    Expect("appended (NOOVERWRITE) contents", 260, 90, 0x0000FF);
+    Expect("texture before the update", 60, 240, 0xFFFF00);
+    Expect("texture after the update", 160, 240, 0x00FFFF);
+    t->Release();
+    vb->Release();
+}
+
+//------------------------------------------------------------------------------
 // Main
 //------------------------------------------------------------------------------
 static bool CreateDeviceWith(int samples, UINT w = W, UINT h = H)
@@ -969,6 +1354,11 @@ static bool CreateDeviceWith(int samples, UINT w = W, UINT h = H)
     pp.MultiSampleType = (D3DMULTISAMPLE_TYPE)samples;
     HRESULT hr = g_d3d->CreateDevice(0, D3DDEVTYPE_HAL, nullptr, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &g_dev);
     if (FAILED(hr)) { printf("CreateDevice failed 0x%08x\n", (unsigned)hr); return false; }
+    // A silent fallback to another backend fails the run.
+    const char *saved = g_case;
+    g_case = "device";
+    Report("renders through the requested backend", dxwebgl2_GetBackend() == g_wantBackend, "%d", dxwebgl2_GetBackend());
+    g_case = saved;
     return true;
 }
 
@@ -989,6 +1379,8 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--noreport")) report = false;
         if (!strcmp(argv[i], "--debug")) dxwebgl2_SetDebug(1);
         if (!strcmp(argv[i], "--no-s3tc")) dxwebgl2_SetDisableS3TC(1);
+        if (!strcmp(argv[i], "--backend=webgpu")) { dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGPU); g_wantBackend = DXWEBGL2_BACKEND_WEBGPU; }
+        if (!strcmp(argv[i], "--backend=webgl2")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGL2);
     }
     dxwebgl2_PlatformHooks hooks = {};
     hooks.OnFramePresented = [] { emscripten_sleep(0); };
@@ -1012,6 +1404,10 @@ int main(int argc, char **argv)
         CaseStateCache();
         CaseInlineShaders();
         CaseInlineVertexShaders();
+        CaseClears();
+        CasePrimitives();
+        CaseFormats();
+        CaseUpdates();
         if (report) CaseDiagnostics();
     }
     else if (mode == "contextloss") { if (!CreateDeviceWith(0)) return 1; RunContextLossMode(); }

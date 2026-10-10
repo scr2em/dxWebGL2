@@ -154,6 +154,8 @@ int main(int argc, char **argv)
 {
     for (int i = 1; i < argc; ++i)
         if (!strncmp(argv[i], "--frames=", 9)) g_maxFrames = atoi(argv[i] + 9);
+    // The library's options (?args=-dxwebgl2-report, -dxwebgl2-backend=webgpu, ...).
+    dxwebgl2_ParseArguments(argc, argv);
 
     dxwebgl2_SetPresentMode(DXWEBGL2_PRESENT_IMPLICIT);
 

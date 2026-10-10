@@ -129,4 +129,10 @@ std::string FragmentTail(const ProgramKey &key);
 /// [0,1], which WebGL cannot do in the sampler.
 std::string TextureFetch(const ProgramKey &key, int stage, const std::string &coord, const std::string &lodArg);
 
+/// Expressions of the texture stage cascade, shared by the GLSL and the WGSL generators (`wgsl` selects the syntax):
+/// the value of a D3DTA_* argument (from the locals diff, cur, tex, spec, tmp and the texture factor) and of a
+/// D3DTOP_* operation on vec4 operands.
+std::string StageArgExpr(uint8_t arg, bool colorPipe, bool wgsl);
+std::string StageOpExpr(uint8_t op, const char *a0, const char *a1, const char *a2, bool wgsl);
+
 } // namespace dxwebgl2

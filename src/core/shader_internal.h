@@ -13,6 +13,9 @@
 
 #include "core/shader.h"
 
+#include <array>
+#include <map>
+
 namespace dxwebgl2 {
 
 enum RegType
@@ -62,6 +65,22 @@ inline bool IsIdentitySwizzle(const Param &p)
 {
     return p.swizzle[0] == 0 && p.swizzle[1] == 1 && p.swizzle[2] == 2 && p.swizzle[3] == 3;
 }
+
+/// A decoded pixel shader instruction (the shared representation the GLSL and WGSL emitters generate code from).
+struct PSInst
+{
+    DWORD op = 0;
+    bool coissue = false;
+    int n = 0;
+    Param p[4];
+};
+
+struct PixelShaderObject::Impl
+{
+    uint32_t version = 0;
+    std::vector<PSInst> insts;
+    std::map<int, std::array<float, 4>> defs;
+};
 
 /// Number of parameter tokens (destination included) that follow an
 /// instruction token. -1 for unknown opcodes.

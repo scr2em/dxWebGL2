@@ -34,20 +34,22 @@ const char *dxwebgl2_GetVersionString(void);
 
 /// GPU APIs the Direct3D device can render through.
 enum dxwebgl2_Backend {
-    /// The best one the browser offers: WebGPU when it is available, WebGL2 otherwise. This is the default. (Until the
-    /// WebGPU backend exists this selects WebGL2.)
+    /// The best one the browser offers. This is the default; for now it selects WebGL2 (docs/WEBGPU.md).
     DXWEBGL2_BACKEND_AUTO = 0,
     DXWEBGL2_BACKEND_WEBGL2 = 1,
-    /// WebGPU (navigator.gpu). Not implemented yet: requesting it logs a message and uses WebGL2.
+    /// WebGPU (navigator.gpu). Needs the library built with DXWEBGL2_WEBGPU and an application linked with -sJSPI (the
+    /// device creation and read-backs wait for the browser); otherwise, or when the browser has no WebGPU adapter, the
+    /// device uses WebGL2 and the reason is logged.
     DXWEBGL2_BACKEND_WEBGPU = 2,
 };
 /// Selects the backend of the devices created from now on (one of dxwebgl2_Backend). Call before CreateDevice().
+/// The command line option -dxwebgl2-backend=auto|webgl2|webgpu does the same.
 void dxwebgl2_SetBackend(int backend);
 /// The backend the device created last renders through (DXWEBGL2_BACKEND_WEBGL2 or DXWEBGL2_BACKEND_WEBGPU), or
 /// DXWEBGL2_BACKEND_AUTO when no device was created yet.
 int dxwebgl2_GetBackend(void);
 
-/// Selects the canvas the WebGL2 context is created on, as a CSS selector
+/// Selects the canvas the WebGL2 (or WebGPU) context is created on, as a CSS selector
 /// ("#canvas" by default). When the device renders from a pthread, the canvas
 /// has to be an OffscreenCanvas transferred to that thread
 /// (-sOFFSCREENCANVAS_SUPPORT -sOFFSCREENCANVASES_TO_PTHREAD).
@@ -159,7 +161,8 @@ unsigned dxwebgl2_GetHitCount(const char *substring);
 
 /// Parses the -dxwebgl2-* options out of an argument vector (the library also reads the C runtime's
 /// __argv by itself when a device is created). Options: -dxwebgl2-report[=s], -dxwebgl2-shaders
-/// (advertise vs.1.1/ps.1.4 so applications take their shader paths), -dxwebgl2-loseafter=N[,M].
+/// (advertise vs.1.1/ps.1.4 so applications take their shader paths), -dxwebgl2-loseafter=N[,M],
+/// -dxwebgl2-backend=auto|webgl2|webgpu (dxwebgl2_SetBackend).
 void dxwebgl2_ParseArguments(int argc, char **argv);
 
 /// Resolves the entry points that an application looks up with GetProcAddress() on

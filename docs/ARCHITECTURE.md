@@ -10,14 +10,14 @@ src/api/               helpers shared by the API front ends: COM plumbing (IUnkn
 src/d3d8/              the Direct3D 8 front end
 src/core/              the API independent core and the backend interface (backend.h)
 src/core/gl/           the WebGL2 backend
-src/core/webgpu/       the WebGPU backend (planned, docs/WEBGPU.md)
+src/core/webgpu/       the WebGPU backend (optional: DXWEBGL2_WEBGPU, docs/WEBGPU.md)
 ```
 
 `tools/check_layering.py` (run by `scripts/test.sh`) enforces the dependency rules:
 
 * `src/core` includes only `src/core` (and the public `dxwebgl2/` headers) and never mentions an `IDirect3D*` COM
   interface;
-* only the backends (`src/core/gl`, later `src/core/webgpu`) include a GPU API header and call the GPU API; the rest of
+* only the backends (`src/core/gl`, `src/core/webgpu`) include a GPU API header and call the GPU API; the rest of
   `src/core` reaches the GPU through `core/backend.h` (the GL enum values of the format table are the one exception);
 * `src/api` may include `src/core` (not a backend);
 * `src/d3d8` may include `src/core` (not a backend) and `src/api`, and uses no GPU API call, type or constant.
@@ -36,8 +36,10 @@ src/core/webgpu/       the WebGPU backend (planned, docs/WEBGPU.md)
 | `format.*` | the table of surface formats (with the WebGL2 internal format/type), pixel conversion between formats, the WebGL2 upload layout (`PrepareForGL`), DXT1-5 decoder (CPU path when S3TC is missing) and encoder |
 | `vertex_layout.cpp` | vertex layouts from FVF codes |
 | `program.*` | `ProgramKey` (everything that influences the generated shader code), the `Program` a backend creates for a key, uniform names and groups |
-| `fixedfunction.cpp` | generates GLSL ES 3.00 for the fixed-function pipeline from a `ProgramKey`: transform, lighting (up to 8 lights), fog, point sprites, clip planes, the texture stage cascade, alpha test |
+| `fixedfunction.cpp` | generates GLSL ES 3.00 for the fixed-function pipeline from a `ProgramKey`: transform, lighting (up to 8 lights), fog, point sprites, clip planes, the texture stage cascade, alpha test; the expressions of the stage cascade are shared with the WGSL generator (`StageArgExpr`, `StageOpExpr`) |
+| `wgsl.h`, `fixedfunction_wgsl.cpp` | the WGSL conventions of the WebGPU backend (uniform block layout, varyings, vertex input signatures, point quads) and the WGSL generator of the fixed-function pipeline, making the same decisions as the GLSL one |
 | `shader.h`, `shader_internal.h`, `shader_vs.cpp`, `shader_ps.cpp`, `shader_assembler.cpp` | the shader bytecode translators: vs.1.1 and ps.1.0-1.4 token streams to GLSL, and the text assembler behind `D3DXAssembleShader` |
+| `shader_wgsl.cpp` | vs.1.1 and ps.1.0-1.4 to WGSL, from the same decoding (the token parameters; for pixel shaders the decoded instruction list of the shader object) |
 
 ### The WebGL2 backend (`src/core/gl`)
 
@@ -52,6 +54,20 @@ src/core/webgpu/       the WebGPU backend (planned, docs/WEBGPU.md)
 
 GL objects remember the generation of the context they were created in; the generation changes when the context is
 lost and when it is restored, so nothing of a dead context is deleted.
+
+### The WebGPU backend (`src/core/webgpu`)
+
+Built with `-DDXWEBGL2_WEBGPU=ON` (Emscripten's emdawnwebgpu port, `<webgpu/webgpu.h>`); the design and the emulations
+are in [WEBGPU.md](WEBGPU.md).
+
+| File | Contents |
+|---|---|
+| `wgpu.h` | `<webgpu/webgpu.h>` and the macros that count the WebGPU calls in the categories of `glcount.h`; included only here |
+| `wgpu_backend.h` | `WebGPUBackend` and its objects (`WGBuffer`, `WGTexture`, `WGSurface`, `WGSampler`, `WGProgram`), the render pipeline key |
+| `wgpu_backend.cpp` | adapter and device creation (waited for with JSPI), capabilities, back buffer (4x multisampled when requested), present pass with the gamma ramp, command submission with the staging rings, read-back (`mapAsync`), device loss |
+| `wgpu_resources.cpp` | buffers, textures (the format table and the conversions on upload), render target and depth/stencil surfaces, samplers |
+| `wgpu_program.cpp` | programs: the WGSL modules (a vertex module per vertex input signature), the uniform block of a program, the pipeline layout |
+| `wgpu_draw.cpp` | render passes and clears (load operations, or a quad), render pipeline and bind group caches, the draw with the fan / fill mode / point sprite emulation |
 
 ### Why this split is the base for Direct3D 9 and for WebGPU
 
@@ -107,9 +123,10 @@ lost and when it is restored, so nothing of a dead context is deleted.
 * **Everything is rendered "flipped"** (WebGL2 backend): row 0 of every framebuffer attachment is the top row of the
   image, exactly like Direct3D surfaces, so render targets sampled as textures and surface read-backs need no vertical
   flip. The vertex stage negates clip-space Y and the winding order is adjusted (`PipelineState::frontFace` is given in
-  that convention). `Present()` flips the back buffer when drawing it to the canvas.
-* **Clip space depth** is converted from Direct3D's `[0, w]` to GL's `[-w, w]` in the vertex shader, and half a pixel is
-  added to emulate Direct3D 8's pixel centers.
+  that convention). `Present()` flips the back buffer when drawing it to the canvas. The WebGPU backend needs none of
+  this: WebGPU's framebuffer y points down like Direct3D's (it inverts `frontFace`).
+* **Clip space depth** is converted from Direct3D's `[0, w]` to GL's `[-w, w]` in the vertex shader (WebGPU's is
+  `[0, w]` already), and half a pixel is added to emulate Direct3D 8's pixel centers.
 * **Matrices are row-major with row vectors** like Direct3D. They are uploaded as they are (`transpose = GL_FALSE`),
   which GL reads as the transposed matrix, so the generated shaders multiply `matrix * vector`.
 * **Vertex attribute locations equal the `D3DVSDE_*` register numbers**, so declarations map one to one; `D3DCOLOR`

@@ -278,9 +278,7 @@ std::string GenerateFixedFunctionVertexShader(const ProgramKey &key)
 //------------------------------------------------------------------------------
 // Fragment stage
 //------------------------------------------------------------------------------
-namespace {
-
-std::string ArgExpr(uint8_t arg, bool colorPipe)
+std::string StageArgExpr(uint8_t arg, bool colorPipe, bool wgsl)
 {
     std::string base;
     switch (arg & 0x0F)
@@ -288,20 +286,22 @@ std::string ArgExpr(uint8_t arg, bool colorPipe)
     case D3DTA_DIFFUSE: base = "diff"; break;
     case D3DTA_CURRENT: base = "cur"; break;
     case D3DTA_TEXTURE: base = "tex"; break;
-    case D3DTA_TFACTOR: base = "u_tfactor"; break;
+    case D3DTA_TFACTOR: base = wgsl ? "u.tfactor" : "u_tfactor"; break;
     case D3DTA_SPECULAR: base = "spec"; break;
     case D3DTA_TEMP: base = "tmp"; break;
     default: base = "cur"; break;
     }
-    if ((arg & D3DTA_ALPHAREPLICATE) && colorPipe) base = "vec4(" + base + ".a)";
-    if (arg & D3DTA_COMPLEMENT) base = "(vec4(1.0) - " + base + ")";
+    const char *v4 = wgsl ? "vec4f" : "vec4";
+    if ((arg & D3DTA_ALPHAREPLICATE) && colorPipe) base = std::string(v4) + "(" + base + ".a)";
+    if (arg & D3DTA_COMPLEMENT) base = "(" + std::string(v4) + "(1.0) - " + base + ")";
     return base;
 }
 
-/// Returns the expression of a texture operation on vec4 operands a0..a2.
-std::string OpExpr(uint8_t op, const char *a0, const char *a1, const char *a2)
+std::string StageOpExpr(uint8_t op, const char *a0, const char *a1, const char *a2, bool wgsl)
 {
     char b[512];
+    const char *v4 = wgsl ? "vec4f" : "vec4";
+    const char *tf = wgsl ? "u.tfactor" : "u_tfactor";
     switch (op)
     {
     case D3DTOP_SELECTARG1: snprintf(b, sizeof b, "%s", a1); break;
@@ -313,18 +313,18 @@ std::string OpExpr(uint8_t op, const char *a0, const char *a1, const char *a2)
     case D3DTOP_ADDSIGNED: snprintf(b, sizeof b, "%s + %s - 0.5", a1, a2); break;
     case D3DTOP_ADDSIGNED2X: snprintf(b, sizeof b, "(%s + %s - 0.5) * 2.0", a1, a2); break;
     case D3DTOP_SUBTRACT: snprintf(b, sizeof b, "%s - %s", a1, a2); break;
-    case D3DTOP_ADDSMOOTH: snprintf(b, sizeof b, "%s + %s * (vec4(1.0) - %s)", a1, a2, a1); break;
+    case D3DTOP_ADDSMOOTH: snprintf(b, sizeof b, "%s + %s * (%s(1.0) - %s)", a1, a2, v4, a1); break;
     case D3DTOP_BLENDDIFFUSEALPHA: snprintf(b, sizeof b, "mix(%s, %s, diff.a)", a2, a1); break;
     case D3DTOP_BLENDTEXTUREALPHA: snprintf(b, sizeof b, "mix(%s, %s, tex.a)", a2, a1); break;
-    case D3DTOP_BLENDFACTORALPHA: snprintf(b, sizeof b, "mix(%s, %s, u_tfactor.a)", a2, a1); break;
+    case D3DTOP_BLENDFACTORALPHA: snprintf(b, sizeof b, "mix(%s, %s, %s.a)", a2, a1, tf); break;
     case D3DTOP_BLENDTEXTUREALPHAPM: snprintf(b, sizeof b, "%s + %s * (1.0 - tex.a)", a1, a2); break;
     case D3DTOP_BLENDCURRENTALPHA: snprintf(b, sizeof b, "mix(%s, %s, cur.a)", a2, a1); break;
     case D3DTOP_PREMODULATE: snprintf(b, sizeof b, "%s", a1); break;
-    case D3DTOP_MODULATEALPHA_ADDCOLOR: snprintf(b, sizeof b, "%s + vec4(%s.a) * %s", a1, a1, a2); break;
-    case D3DTOP_MODULATECOLOR_ADDALPHA: snprintf(b, sizeof b, "%s * %s + vec4(%s.a)", a1, a2, a1); break;
-    case D3DTOP_MODULATEINVALPHA_ADDCOLOR: snprintf(b, sizeof b, "vec4(1.0 - %s.a) * %s + %s", a1, a2, a1); break;
-    case D3DTOP_MODULATEINVCOLOR_ADDALPHA: snprintf(b, sizeof b, "(vec4(1.0) - %s) * %s + vec4(%s.a)", a1, a2, a1); break;
-    case D3DTOP_DOTPRODUCT3: snprintf(b, sizeof b, "vec4(dot(%s.rgb - 0.5, %s.rgb - 0.5) * 4.0)", a1, a2); break;
+    case D3DTOP_MODULATEALPHA_ADDCOLOR: snprintf(b, sizeof b, "%s + %s(%s.a) * %s", a1, v4, a1, a2); break;
+    case D3DTOP_MODULATECOLOR_ADDALPHA: snprintf(b, sizeof b, "%s * %s + %s(%s.a)", a1, a2, v4, a1); break;
+    case D3DTOP_MODULATEINVALPHA_ADDCOLOR: snprintf(b, sizeof b, "%s(1.0 - %s.a) * %s + %s", v4, a1, a2, a1); break;
+    case D3DTOP_MODULATEINVCOLOR_ADDALPHA: snprintf(b, sizeof b, "(%s(1.0) - %s) * %s + %s(%s.a)", v4, a1, a2, v4, a1); break;
+    case D3DTOP_DOTPRODUCT3: snprintf(b, sizeof b, "%s(dot(%s.rgb - 0.5, %s.rgb - 0.5) * 4.0)", v4, a1, a2); break;
     case D3DTOP_MULTIPLYADD: snprintf(b, sizeof b, "%s + %s * %s", a0, a1, a2); break;
     case D3DTOP_LERP: snprintf(b, sizeof b, "mix(%s, %s, %s)", a2, a1, a0); break;
     case D3DTOP_BUMPENVMAP:
@@ -333,8 +333,6 @@ std::string OpExpr(uint8_t op, const char *a0, const char *a1, const char *a2)
     }
     return b;
 }
-
-} // namespace
 
 std::string FragmentTail(const ProgramKey &key)
 {
@@ -462,17 +460,17 @@ std::string GenerateFixedFunctionFragmentShader(const ProgramKey &key)
             s += "        vec4 tex = vec4(1.0);\n";
 
         auto emitArg = [&](const char *name, uint8_t arg, bool colorPipe) {
-            Add(s, "        vec4 %s = %s;\n", name, ArgExpr(arg, colorPipe).c_str());
+            Add(s, "        vec4 %s = %s;\n", name, StageArgExpr(arg, colorPipe, false).c_str());
         };
         emitArg("ca0", st.colorArg0, true); emitArg("ca1", st.colorArg1, true); emitArg("ca2", st.colorArg2, true);
-        std::string cexpr = OpExpr(st.colorOp, "ca0", "ca1", "ca2");
+        std::string cexpr = StageOpExpr(st.colorOp, "ca0", "ca1", "ca2", false);
         Add(s, "        vec4 cres = %s;\n", cexpr.c_str());
         if (st.alphaOp == D3DTOP_DISABLE)
             s += "        float ares = cur.a;\n";
         else
         {
             emitArg("aa0", st.alphaArg0, false); emitArg("aa1", st.alphaArg1, false); emitArg("aa2", st.alphaArg2, false);
-            std::string aexpr = OpExpr(st.alphaOp, "aa0", "aa1", "aa2");
+            std::string aexpr = StageOpExpr(st.alphaOp, "aa0", "aa1", "aa2", false);
             Add(s, "        float ares = (%s).a;\n", aexpr.c_str());
         }
         Add(s, "        %s = clamp(vec4(cres.rgb, ares), 0.0, 1.0);\n", st.resultTemp ? "tmp" : "cur");

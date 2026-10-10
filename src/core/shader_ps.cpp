@@ -33,21 +33,6 @@ std::string Fmt(const char *fmt, ...)
 
 } // namespace
 
-struct PSInst
-{
-    DWORD op = 0;
-    bool coissue = false;
-    int n = 0;
-    Param p[4];
-};
-
-struct PixelShaderObject::Impl
-{
-    uint32_t version = 0;
-    std::vector<PSInst> insts;
-    std::map<int, std::array<float, 4>> defs;
-};
-
 PixelShaderObject::~PixelShaderObject() { delete impl; }
 
 bool CreatePixelShaderObject(const DWORD *function, PixelShaderObject **out)

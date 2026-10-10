@@ -19,10 +19,11 @@
 // stencil, formats...), --reset, --debug (GL error checks), --frames=N (long run; two screenshots are compared
 // while it renders, which shows whether frames are presented from a thread that never yields), --yield
 // (emscripten_sleep(0) per frame through the OnFramePresented hook), --backend=webgl2|webgpu|auto
-// (dxwebgl2_SetBackend; WebGPU falls back to WebGL2 until it exists). The test prints STATS lines with the WebGL call
-// counts of the last frame and of the whole run.
+// (dxwebgl2_SetBackend; the test fails when the device does not render through the requested backend, and so does
+// this runner when WebGPU reports an error). The test prints STATS lines with the GPU API call counts of the last frame
+// and of the whole run.
 //
-// Needs the `playwright` npm package and Chromium, see browser.mjs. WebGL2 is provided by SwiftShader.
+// Needs the `playwright` npm package and Chromium, see browser.mjs. WebGL2 and WebGPU are provided by SwiftShader.
 import path from 'node:path';
 import { startServer } from './serve.mjs';
 import { launchBrowser, openPage, sleep } from './browser.mjs';
@@ -54,7 +55,10 @@ export async function runTest(buildDir, shot, testArgs, { page: pageName = 'd3d8
   server.close();
   const result = lines.find((l) => l.includes('TEST_RESULT:')) || '';
   const frozen = lines.some((l) => l.includes('IDENTICAL (frozen?)'));
-  return { lines, done: state.done, pass: /TEST_RESULT: PASS/.test(result) && !frozen, result };
+  // Errors the WebGPU implementation reports (an invalid object makes the whole frame's commands invalid).
+  const gpuErrors = lines.filter((l) => /WebGPU (validation|internal|out of memory) error/.test(l));
+  if (gpuErrors.length) lines.push(`WEBGPU_ERRORS: ${gpuErrors.length}`);
+  return { lines, done: state.done, pass: /TEST_RESULT: PASS/.test(result) && !frozen && !gpuErrors.length, result };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
