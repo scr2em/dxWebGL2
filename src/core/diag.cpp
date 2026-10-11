@@ -234,8 +234,8 @@ void dxwebgl2_ParseArguments(int argc, char **argv)
     {
         const char *a = argv[i];
         if (!a) continue;
-        if (strncmp(a, "-dxwebgl2-report", 14) == 0)
-            dxwebgl2_SetReport(a[14] == '=' ? atoi(a + 15) : 10);
+        if (strncmp(a, "-dxwebgl2-report", 16) == 0 && (a[16] == '\0' || a[16] == '='))
+            dxwebgl2_SetReport(a[16] == '=' ? atoi(a + 17) : 10);
         else if (strcmp(a, "-dxwebgl2-shaders") == 0)
             dxwebgl2_SetShaderModel(0x0101, 0x0104);
         else if (strncmp(a, "-dxwebgl2-backend=", 18) == 0)
