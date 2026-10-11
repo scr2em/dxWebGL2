@@ -12,7 +12,9 @@ cmake --build build --target hello_triangle
 python3 -m http.server -d build/examples 8000      # then open http://localhost:8000/hello_triangle.html
 ```
 
-The page needs a browser with WebGL2 (developed and tested with Chrome/Chromium).
+The page needs a browser with WebGL2 (developed and tested with Chrome/Chromium). Configured with
+`-DDXWEBGL2_WEBGPU=ON`, the example renders through WebGPU when the browser offers it (the default backend,
+`DXWEBGL2_BACKEND_AUTO`) and through WebGL2 otherwise; `?args=-dxwebgl2-backend=webgl2` selects WebGL2.
 
 Things worth knowing:
 

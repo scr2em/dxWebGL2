@@ -145,9 +145,11 @@ public:
     WebGPUBackend() : Backend(BackendKind::WebGPU) {}
     ~WebGPUBackend() override;
 
-    /// Creates the adapter and the device (waits for them, which needs a build that can suspend). False with a logged
-    /// reason when WebGPU is not usable; the caller then uses WebGL2.
+    /// Creates the adapter and the device (waits for them, which needs a build that can suspend). False when WebGPU is
+    /// not usable (no JSPI, no navigator.gpu, no adapter, requestDevice failed), with the reason in Unavailable(); the
+    /// caller then uses WebGL2. Nothing is logged here: the caller logs the one line.
     bool Acquire();
+    const std::string &Unavailable() const { return m_unavailable; }
 
     //-- Backend (wgpu_backend.cpp) ------------------------------------------------------------
     bool Initialize(uint32_t width, uint32_t height) override;
@@ -260,6 +262,7 @@ private:
     WGPUSurface m_surface = nullptr;
     WGPUTextureFormat m_canvasFormat = WGPUTextureFormat_BGRA8Unorm;
     bool m_bc = false;                  ///< texture-compression-bc on the device
+    std::string m_unavailable;          ///< why Acquire() / RequestDevice() failed
     volatile int m_ctxEvent = 0;        ///< 1 = lost, 2 = a new device can be created
     bool m_lost = false;                ///< the device is lost (or was destroyed by the test aid)
     bool m_lostByTest = false;          ///< ... by TestLoseContext (restorable only after TestRestoreContext)

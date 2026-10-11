@@ -1,10 +1,12 @@
 # WebGPU backend
 
-Status: **step 2 is done: the WebGPU backend renders everything the WebGL2 backend renders**, the fixed-function
-pipeline and vertex / pixel shaders 1.x alike. It is built with `-DDXWEBGL2_WEBGPU=ON` (Emscripten's emdawnwebgpu
-port) and selected with `dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGPU)` or `-dxwebgl2-backend=webgpu`; the application
-is linked with `-sJSPI`. Every runtime, feature and regression test runs on both backends (section 7).
-`DXWEBGL2_BACKEND_AUTO` (the default) still selects WebGL2: switching it is the decision of the next step (section 10).
+Status: **step 3 is done: the default backend, `DXWEBGL2_BACKEND_AUTO`, selects WebGPU** when the library is built with
+it, the application can wait for the device (JSPI) and the browser gives an adapter and a device, and WebGL2 otherwise
+(section 6). The WebGPU backend renders everything the WebGL2 backend renders, the fixed-function pipeline and vertex /
+pixel shaders 1.x alike. It is built with `-DDXWEBGL2_WEBGPU=ON` (Emscripten's emdawnwebgpu port), the application is
+linked with `-sJSPI`; `dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGL2|WEBGPU)` or `-dxwebgl2-backend=webgl2|webgpu` force a
+backend. Every runtime, feature and regression test runs on both backends, and the choice of AUTO is tested in browsers
+with and without WebGPU (section 7).
 
 ```
   your Direct3D 8 code
@@ -192,7 +194,9 @@ Vulkan flags `requestDevice` fails.
 `requestAdapter`, `requestDevice` and `mapAsync` are asynchronous, `IDirect3D8::CreateDevice` and `LockRect` are not.
 **Decision (implemented): JSPI.** The calling thread waits in `wgpuInstanceWaitAny` (instance created with
 `TimedWaitAny`), which suspends it. The backend is only offered when the build can suspend (`emscripten_has_asyncify()`,
-JSPI or ASYNCIFY); otherwise the device uses WebGL2 and the reason is logged. Calls that wait must come from code that
+JSPI or ASYNCIFY); otherwise the device uses WebGL2 and the reason is logged. Whether the *calling code* can suspend
+cannot be detected (JSPI traps when a function that suspends is reached from a call that is not a promising export), so
+with `DXWEBGL2_BACKEND_AUTO` too a JSPI application creates its device from code that can suspend. Calls that wait must come from code that
 can suspend: a `-sPROXY_TO_PTHREAD` main, or `main` itself on the main thread (the examples create their device there).
 A read-back from a `requestAnimationFrame` callback on the main thread cannot wait: render from a pthread, or avoid
 read-backs there. Rendering itself never waits.
@@ -206,7 +210,7 @@ and `Reset()` creates a new adapter and device (the adapter of a lost device can
 
 ```c
 enum dxwebgl2_Backend {
-    DXWEBGL2_BACKEND_AUTO = 0,     /* default: WebGL2 for now */
+    DXWEBGL2_BACKEND_AUTO = 0,     /* default: WebGPU when available, WebGL2 otherwise */
     DXWEBGL2_BACKEND_WEBGL2 = 1,
     DXWEBGL2_BACKEND_WEBGPU = 2,   /* needs DXWEBGL2_WEBGPU=ON and -sJSPI; otherwise WebGL2 with a logged reason */
 };
@@ -214,18 +218,47 @@ void dxwebgl2_SetBackend(int backend);   /* before CreateDevice(); also -dxwebgl
 int dxwebgl2_GetBackend(void);           /* backend of the device created last */
 ```
 
-`CreateBackend()` (`src/core/backend.cpp`) decides: for WebGPU it creates the instance, adapter and device
-(`WebGPUBackend::Acquire`) and falls back to WebGL2 when any of it fails. `dxwebgl2_GetRendererString()` reports
-"WebGPU: google swiftshader". CMake: `DXWEBGL2_WEBGPU` (default `OFF`) compiles `src/core/webgpu` and adds
+`CreateBackend()` (`src/core/backend.cpp`) decides when a device is created. For WebGPU (requested, or tried by AUTO)
+`CreateWebGPUBackend` creates the instance, adapter and device (`WebGPUBackend::Acquire`) and returns null with the
+reason, never aborting, when any of it is missing:
+
+| Situation | `DXWEBGL2_BACKEND_AUTO` | `DXWEBGL2_BACKEND_WEBGPU` |
+|---|---|---|
+| library built without `DXWEBGL2_WEBGPU` | WebGL2, nothing logged | WebGL2, logged and counted (`Approximated`) |
+| application not linked with `-sJSPI` / `-sASYNCIFY` | WebGL2, one line: `WebGPU is not available, using WebGL2: the application is not linked with -sJSPI ...` | WebGL2, logged and counted |
+| no `navigator.gpu`, or `requestAdapter()` returns null (a browser without WebGPU, or Chromium without `--enable-unsafe-webgpu` on Linux) | WebGL2, one line: `... no adapter: ...` | WebGL2, logged and counted |
+| `requestDevice()` fails | WebGL2, one line: `... requestDevice failed: ...` | WebGL2, logged and counted |
+| adapter and device | **WebGPU** | WebGPU |
+
+AUTO's fallback is not an approximation (WebGL2 is a complete backend): one log line, no diagnostics hit. A canvas keeps
+the kind of context it got first, so once a device rendered to a canvas through WebGL2, AUTO keeps WebGL2 for the next
+devices on that canvas (no second attempt, no second line). `dxwebgl2_GetRendererString()` reports "WebGPU: google
+swiftshader" or "WebGL2: ...". CMake: `DXWEBGL2_WEBGPU` (default `OFF`) compiles `src/core/webgpu` and adds
 `--use-port=emdawnwebgpu` to the link options of the library's users; `scripts/test.sh` builds with it.
+
+Why WebGPU by default: it passes the same test suite as WebGL2 (frame hashes per backend, pictures compared, sections
+7 and 9), and its frames cost less CPU time (section 9). Applications that cannot suspend where they create the device,
+or that prefer WebGL2, select it explicitly.
 
 ## 7. Testing (as implemented)
 
-* Every runner takes `--backend=webgl2|webgpu` (`run_test.mjs` passes it to the page, `run_features.mjs` to every
-  mode, `run_regression.mjs` selects the hashes, `run_example.mjs` passes `-dxwebgl2-backend=` to the page) and every
-  browser starts with the WebGPU flags (they do not change WebGL2's pictures: the WebGL2 hashes are unchanged). The
-  test programs check that the device renders through the requested backend; WebGPU errors in the log fail a run.
-  `scripts/test.sh` runs the whole browser suite once per backend (`--backend webgl2|webgpu` for one).
+* Every runner takes `--backend=webgl2|webgpu|auto` (`run_test.mjs` passes it to the page, `run_features.mjs` to every
+  mode, `run_regression.mjs` selects the hashes, `run_example.mjs` passes `-dxwebgl2-backend=` to the page); without
+  it the page gets no backend option, i.e. the library's default, AUTO. `scripts/test.sh` names the backend of every
+  run, so its WebGL2 runs stay WebGL2 runs (same screenshots, same hashes, the same reference keys). Every browser
+  starts with the WebGPU flags (they do not change WebGL2's pictures) unless a runner asks for a browser without them
+  (`--no-webgpu-browser`: `navigator.gpu` exists, `requestAdapter()` returns null). The test programs check that the
+  device renders through the requested backend (`--expect-backend=` names the one AUTO must select) and print it
+  (`BACKEND webgl2|webgpu`); WebGPU errors in the log fail a run. `scripts/test.sh` runs the whole browser suite once per
+  backend (`--backend webgl2|webgpu` for one), then the AUTO checks.
+* **AUTO** (`scripts/test.sh`, step "Default backend"): `run_regression.mjs --backend=auto --expect-backend=webgpu`
+  renders the default and shaders scenes through AUTO in a browser with WebGPU (the hashes must be the `webgpu:` ones),
+  and with `--expect-backend=webgl2 --no-webgpu-browser` in a browser without WebGPU (the WebGL2 hashes, and exactly one
+  `WebGPU is not available` line). `run_auto.mjs` opens the pages of `tests/consumer/device.cpp`, built by
+  `tests/consumer/run.sh` against the installed package (WebGPU backend; linked with and without `-sJSPI`) and against
+  the sources with `add_subdirectory` (without `DXWEBGL2_WEBGPU`), in browsers with WebGPU, without an adapter, without
+  `navigator.gpu` and with a `requestDevice()` that rejects (init scripts): each must get the backend of the table in
+  section 6, log the line it says and show its cleared canvas.
 * **Frame hashes per backend**: `reference_hashes.json` has the WebGL2 hashes under the scene names (unchanged) and
   the WebGPU ones under `webgpu:<scene>`.
 * **Picture comparison**: `tests/runner/compare_backends.mjs` renders the runtime test scenes with both backends and
@@ -319,13 +352,18 @@ Per draw the WebGPU backend makes about 2 calls (bind group 0 at the block's off
 when it changes), WebGL2 about 3 (uniforms, texture bind, draw); the uniform data goes up once per frame (512 bytes per
 draw here: the program's block when the world matrix or the material changed).
 
-## 10. Next steps
+## 10. Step 3: what was done and how it was verified
 
-1. Decide `DXWEBGL2_BACKEND_AUTO`: prefer WebGPU when the build can suspend and the browser offers an adapter (the
-   suites pass), or keep WebGL2 until the game was checked on real data with both.
-2. Dynamic buffers: rename (a new `GPUBuffer` per rewrite of a buffer used in the frame, recycled after the submit)
+* **AUTO prefers WebGPU** (`src/core/backend.cpp`, `src/core/webgpu/wgpu_backend.*`): section 6. `CreateWebGPUBackend`
+  returns null with the reason instead of logging it (the caller logs one line); a `requestDevice()` that fails is not
+  reported as a device loss; a failed attempt releases its instance and adapter.
+* The WebGL2 and WebGPU frame hashes are unchanged.
+
+## 11. Next steps
+
+1. Dynamic buffers: rename (a new `GPUBuffer` per rewrite of a buffer used in the frame, recycled after the submit)
    instead of submitting; NOOVERWRITE appends could skip both when the written range was not drawn from.
-3. `ShaderIR` (ROADMAP M2) for both shader languages, before shader model 2/3.
-4. Optional features: `clip-distances` for user clip planes, `texture-component-swizzle` for luminance / alpha formats
+2. `ShaderIR` (ROADMAP M2) for both shader languages, before shader model 2/3.
+3. Optional features: `clip-distances` for user clip planes, `texture-component-swizzle` for luminance / alpha formats
    (no expansion), timestamp queries for GPU timings.
-5. Strip draws from index buffers: WebGPU restarts strips at index 0xFFFF / 0xFFFFFFFF (Direct3D does not).
+4. Strip draws from index buffers: WebGPU restarts strips at index 0xFFFF / 0xFFFFFFFF (Direct3D does not).

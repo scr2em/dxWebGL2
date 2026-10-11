@@ -6,7 +6,8 @@
  * See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
  */
 /*
- * Checked feature tests of the Direct3D 8 library (on the WebGL2 backend, or the WebGPU one with --backend=webgpu).
+ * Checked feature tests of the Direct3D 8 library, on the backend --backend=webgl2|webgpu|auto selects (without it the
+ * library's default, AUTO; --expect-backend=webgl2|webgpu names the backend AUTO must select).
  *
  * Every case draws through the plain D3D8 API, reads the back buffer and compares pixels (or counters)
  * with values computed by hand; it prints "CHECK <case> <label> PASS|FAIL". Cases that need a fresh
@@ -30,7 +31,9 @@
 #include <vector>
 
 static bool g_msaaDisabled = false;
-static int g_wantBackend = DXWEBGL2_BACKEND_WEBGL2; // --backend=webgpu: the device must render through WebGPU
+/// The backend the device must render through (--backend=webgl2|webgpu, or --expect-backend= for what
+/// DXWEBGL2_BACKEND_AUTO has to select); -1 = whichever AUTO selects (no option, --backend=auto).
+static int g_wantBackend = -1;
 static IDirect3D8 *g_d3d;
 static IDirect3DDevice8 *g_dev;
 static int g_pass = 0, g_fail = 0;
@@ -1357,7 +1360,8 @@ static bool CreateDeviceWith(int samples, UINT w = W, UINT h = H)
     // A silent fallback to another backend fails the run.
     const char *saved = g_case;
     g_case = "device";
-    Report("renders through the requested backend", dxwebgl2_GetBackend() == g_wantBackend, "%d", dxwebgl2_GetBackend());
+    Report("renders through the requested backend", g_wantBackend < 0 || dxwebgl2_GetBackend() == g_wantBackend, "%d",
+           dxwebgl2_GetBackend());
     g_case = saved;
     return true;
 }
@@ -1380,7 +1384,13 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--debug")) dxwebgl2_SetDebug(1);
         if (!strcmp(argv[i], "--no-s3tc")) dxwebgl2_SetDisableS3TC(1);
         if (!strcmp(argv[i], "--backend=webgpu")) { dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGPU); g_wantBackend = DXWEBGL2_BACKEND_WEBGPU; }
-        if (!strcmp(argv[i], "--backend=webgl2")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGL2);
+        if (!strcmp(argv[i], "--backend=webgl2")) { dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGL2); g_wantBackend = DXWEBGL2_BACKEND_WEBGL2; }
+        if (!strcmp(argv[i], "--backend=auto")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_AUTO);
+    }
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!strcmp(argv[i], "--expect-backend=webgl2")) g_wantBackend = DXWEBGL2_BACKEND_WEBGL2;
+        if (!strcmp(argv[i], "--expect-backend=webgpu")) g_wantBackend = DXWEBGL2_BACKEND_WEBGPU;
     }
     dxwebgl2_PlatformHooks hooks = {};
     hooks.OnFramePresented = [] { emscripten_sleep(0); };

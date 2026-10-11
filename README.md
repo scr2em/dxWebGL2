@@ -42,9 +42,9 @@ standalone library. License: **GPL-3.0-or-later** ([LICENSE](LICENSE), [NOTICE.m
 | Diagnostics report (`dxwebgl2_SetReport`, `-dxwebgl2-report`): per-frame call counts, unsupported / approximated features | implemented |
 | D3DX 8: math (complete), matrix stack, assembler, buffers, texture/surface creation, loading (DDS/TGA/BMP), filtering | subset |
 | Additional swap chains, palettized textures, patches, `ProcessVertices`, vertex blending | not supported (`D3DERR_NOTAVAILABLE` / `D3DERR_INVALIDCALL`, or absent from the caps) |
-| WebGPU backend (`-DDXWEBGL2_WEBGPU=ON`, selected with `dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGPU)` or `-dxwebgl2-backend=webgpu`; needs `-sJSPI`): all of the above, shaders included | implemented, opt-in; `DXWEBGL2_BACKEND_AUTO` still selects WebGL2 ([docs/WEBGPU.md](docs/WEBGPU.md)) |
+| WebGPU backend (`-DDXWEBGL2_WEBGPU=ON`, linked with `-sJSPI`): all of the above, shaders included. The default backend, `DXWEBGL2_BACKEND_AUTO`, selects it when the browser offers WebGPU (WebGL2 otherwise); `dxwebgl2_SetBackend` / `-dxwebgl2-backend=webgl2\|webgpu` force one | implemented ([docs/WEBGPU.md](docs/WEBGPU.md)) |
 | Direct3D 9 | planned, see [docs/ROADMAP.md](docs/ROADMAP.md) |
-| Tests | header ABI, D3DX math, wide strings, project `windows.h` integration, 100+ API checks, 8 rendering modes, 7 feature test modes (context loss, multisampling, shader instructions, emulations, ...) and a frame hash regression in headless Chromium, each on both backends, and a picture comparison of the backends |
+| Tests | header ABI, D3DX math, wide strings, project `windows.h` integration, 100+ API checks, 8 rendering modes, 7 feature test modes (context loss, multisampling, shader instructions, emulations, ...) and a frame hash regression in headless Chromium, each on both backends, a picture comparison of the backends, and the default backend's choice in browsers with and without WebGPU |
 
 [docs/COVERAGE.md](docs/COVERAGE.md) lists the API surface method by method.
 
@@ -59,7 +59,9 @@ standalone library. License: **GPL-3.0-or-later** ([LICENSE](LICENSE), [NOTICE.m
 * Reading render targets back (`LockRect` on a render target, `GetFrontBuffer`) goes through `glReadPixels` and stalls
   the GPU; managed resources keep a system-memory copy. With the WebGPU backend a read-back waits for `mapAsync` by
   suspending the calling thread (JSPI): it works from a `-sPROXY_TO_PTHREAD` main or other code that can suspend, not
-  from a `requestAnimationFrame` callback on the main thread.
+  from a `requestAnimationFrame` callback on the main thread. Creating the device waits for the WebGPU adapter in the
+  same way, so an application linked with `-sJSPI` (with the WebGPU backend built) creates its device from `main`, a
+  `-sPROXY_TO_PTHREAD` main or a JSPI export, or selects `DXWEBGL2_BACKEND_WEBGL2`.
 * Emulation differences are logged once per distinct message (`[dxWebGL2] unsupported: ...` on the console); the
   diagnostics report (`dxwebgl2_SetReport(seconds)`, or `-dxwebgl2-report` on the command line) lists everything
   unsupported or approximated that an application actually used, together with per-frame WebGL call counts.
@@ -112,7 +114,8 @@ emcmake cmake -S app -B app/build -DCMAKE_PREFIX_PATH=<dir> -DCMAKE_FIND_ROOT_PA
 Linking `dxWebGL2::dxwebgl2` adds the include directories for `<d3d8.h>`, `<d3dx8.h>` and
 `<dxwebgl2/dxwebgl2.h>`, and the WebGL2 link options `-sUSE_WEBGL2=1 -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2`
 (with `DXWEBGL2_WEBGPU=ON` also `--use-port=emdawnwebgpu`, Emscripten's WebGPU bindings; link the application with
-`-sJSPI` to be able to select the WebGPU backend).
+`-sJSPI` to be able to use the WebGPU backend: the default backend then selects it in browsers that offer WebGPU, and the
+device must be created from code that can suspend, see [docs/WEBGPU.md](docs/WEBGPU.md)).
 
 | Target | Use |
 |---|---|
@@ -166,7 +169,7 @@ Your page needs `<canvas id="canvas">` (or call `dxwebgl2_SetCanvas("#my-canvas"
 | Function | Purpose |
 |---|---|
 | `dxwebgl2_SetCanvas(selector)` | canvas the WebGL2 (or WebGPU) context is created on (`"#canvas"` by default) |
-| `dxwebgl2_SetBackend(backend)`, `dxwebgl2_GetBackend()` | GPU API to render through: `DXWEBGL2_BACKEND_AUTO` (default, WebGL2 for now), `_WEBGL2`, `_WEBGPU` (when built with `DXWEBGL2_WEBGPU` and linked with `-sJSPI`; otherwise WebGL2 with a logged reason, see [docs/WEBGPU.md](docs/WEBGPU.md)), and the one in use. Also `-dxwebgl2-backend=auto\|webgl2\|webgpu` on the command line |
+| `dxwebgl2_SetBackend(backend)`, `dxwebgl2_GetBackend()` | GPU API to render through: `DXWEBGL2_BACKEND_AUTO` (default: WebGPU when the library is built with `DXWEBGL2_WEBGPU`, the application is linked with `-sJSPI` and the browser has a WebGPU adapter and device; WebGL2 otherwise, with one log line), `_WEBGL2`, `_WEBGPU` (WebGL2 with a logged reason when WebGPU cannot be used, see [docs/WEBGPU.md](docs/WEBGPU.md)), and the one in use. Also `-dxwebgl2-backend=auto\|webgl2\|webgpu` on the command line |
 | `dxwebgl2_SetDesktopSize(w, h)` | the "desktop" reported by `GetAdapterDisplayMode` / mode enumeration |
 | `dxwebgl2_SetShaderModel(vs, ps)` | shader versions reported in `D3DCAPS8` (`0x0101`, `0x0104`; 0 = none, the default) |
 | `dxwebgl2_SetPresentMode(mode)` | `DXWEBGL2_PRESENT_EXPLICIT` (default) or `DXWEBGL2_PRESENT_IMPLICIT` |
@@ -219,7 +222,7 @@ exact steps for the game port.
 ```sh
 scripts/test.sh                  # configure, build, run everything (needs Emscripten, Ninja, node, Playwright + Chromium)
 scripts/test.sh --no-browser     # skip the headless Chromium parts
-scripts/test.sh --backend webgpu # the browser tests on one backend only (webgl2, webgpu; default: both)
+scripts/test.sh --backend webgpu # the browser tests on one backend only (webgl2, webgpu; default: both, then AUTO)
 ```
 
 `scripts/test.sh` builds with the WebGPU backend and runs the repository checks (SPDX headers, architecture layering,
@@ -227,7 +230,10 @@ interface golden file), the node tests (header ABI, D3DX math, wide strings, int
 and, in headless Chromium, once per backend: the runtime test in eight modes, the feature tests (context loss,
 multisampling, shader instructions, D3DX filters, state caching, the emulations of the WebGPU backend, diagnostics),
 the frame hash regression and both examples; then it compares the pictures of the two backends
-(`tests/runner/compare_backends.mjs`). Playwright is found through `NODE_PATH` (default `/opt/node22/lib/node_modules`)
+(`tests/runner/compare_backends.mjs`) and checks the default backend: `DXWEBGL2_BACKEND_AUTO` renders the WebGPU pictures in
+a browser with WebGPU and the WebGL2 pictures in one without, and small programs built with and without the WebGPU
+backend and JSPI get the backend they should (`tests/runner/run_auto.mjs`). Every run names its backend
+(`--backend=webgl2|webgpu`); without the option a runner leaves the choice to the library's default. Playwright is found through `NODE_PATH` (default `/opt/node22/lib/node_modules`)
 and the browser through `PLAYWRIGHT_BROWSERS_PATH` (default `/opt/pw-browsers`) or `CHROMIUM_PATH`. See
 [docs/CI.md](docs/CI.md) for running it in continuous integration (no workflow files are shipped).
 

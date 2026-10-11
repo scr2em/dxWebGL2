@@ -7,7 +7,8 @@
 # See the LICENSE file or <https://www.gnu.org/licenses/> for the license terms.
 #
 # Installs dxWebGL2 and builds tests/consumer against it in the three supported ways (installed package,
-# add_subdirectory, FetchContent), running each result in node. Needs `emcmake` on the PATH.
+# add_subdirectory, FetchContent), running each result in node. Needs `emcmake` on the PATH. The device pages it builds
+# too (consumer_device*.html) need a browser: tests/runner/run_auto.mjs opens them.
 #
 #   tests/consumer/run.sh <repository> <build-dir-of-dxwebgl2> <work-dir>
 set -euo pipefail

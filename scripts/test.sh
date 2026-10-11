@@ -12,7 +12,9 @@
 #   2. unit and integration tests in node (header ABI, D3DX math, wide strings, project windows.h, WebD3D8 compatibility)
 #   3. install + consuming the package (find_package, add_subdirectory, FetchContent)
 #   4. in headless Chromium (SwiftShader provides WebGL2 and WebGPU), once per backend: the runtime test, the feature
-#      tests, the frame hash regression and the examples; then the pictures of the two backends are compared
+#      tests, the frame hash regression and the examples; then the pictures of the two backends are compared, and
+#      the default backend (DXWEBGL2_BACKEND_AUTO) is checked to select WebGPU when the browser offers it and WebGL2
+#      otherwise (a browser without WebGPU, builds without the backend or without JSPI)
 #
 # Usage: scripts/test.sh [--clean] [--no-browser] [--build-dir DIR] [--jobs N] [--backend webgl2|webgpu|both]
 #
@@ -82,9 +84,10 @@ step "Install and consume the package (find_package, add_subdirectory, FetchCont
 if [ "$BROWSER" = 1 ]; then
     status=0
     for backend in $BACKENDS; do
-        # The WebGL2 runs pass no backend option (the default selects WebGL2): their commands are those of the WebGL2-only
-        # test suite, and so are their screenshots' names.
-        if [ "$backend" = webgl2 ]; then bopt=""; suffix=""; else bopt="--backend=$backend"; suffix="_$backend"; fi
+        # Every run names its backend (no option means the library's default, AUTO, which selects WebGPU here). The
+        # WebGL2 screenshots keep the names of the WebGL2-only test suite.
+        bopt="--backend=$backend"
+        if [ "$backend" = webgl2 ]; then suffix=""; else suffix="_$backend"; fi
 
         step "Runtime test in headless Chromium ($backend)"
         # The last mode renders ~10 s from a thread that never returns to its event loop and checks that frames keep being shown.
@@ -129,6 +132,28 @@ if [ "$BROWSER" = 1 ]; then
             echo "$out" | sed 's/^/  /'
         else
             echo "FAILED"; echo "$out" | tail -20; status=1
+        fi
+    fi
+    if [ "$BACKENDS" = "webgl2 webgpu" ]; then
+        step "Default backend (DXWEBGL2_BACKEND_AUTO): WebGPU when the browser offers it, WebGL2 otherwise"
+        # The runtime test scenes through AUTO must be the explicit backend's pictures (frame hashes), in a browser with
+        # WebGPU and in one without (no adapter: one log line, then WebGL2).
+        for nowebgpu in "" --no-webgpu-browser; do
+            expect=webgpu; [ -n "$nowebgpu" ] && expect=webgl2
+            if out="$("$NODE_BROWSER" "$ROOT/tests/runner/run_regression.mjs" "$BUILD_DIR/tests" --backend=auto --expect-backend=$expect \
+                        --scenes=default,shaders $nowebgpu 2>&1)"; then
+                echo "$out" | grep -v '^RESULT' | sed "s/^/  ${nowebgpu:+(no WebGPU) }/"
+            else
+                echo "FAILED"; echo "$out" | tail -20; status=1
+            fi
+        done
+        # Small programs built against the installed package (with the WebGPU backend, with and without -sJSPI) and
+        # against the sources without DXWEBGL2_WEBGPU (add_subdirectory): the backend each one gets, also when WebGPU
+        # has no adapter, no navigator.gpu or a failing requestDevice.
+        if out="$("$NODE_BROWSER" "$ROOT/tests/runner/run_auto.mjs" "$BUILD_DIR/consumers" 2>&1)"; then
+            echo "$out" | sed 's/^/  /'
+        else
+            echo "FAILED"; echo "$out" | tail -30; status=1
         fi
     fi
     [ "$status" = 0 ] || { echo; echo "SOME BROWSER TESTS FAILED"; exit 1; }

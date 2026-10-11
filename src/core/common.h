@@ -40,6 +40,7 @@ struct Config
     int presentMode = DXWEBGL2_PRESENT_EXPLICIT;
     int backend = DXWEBGL2_BACKEND_AUTO;        ///< dxwebgl2_SetBackend
     int activeBackend = DXWEBGL2_BACKEND_AUTO;  ///< backend of the device created last (dxwebgl2_GetBackend)
+    std::string activeCanvas;                   ///< canvas of the device created last
     dxwebgl2_PlatformHooks hooks = {};
     bool debug = false;
     int debugForce = 0;	// diagnosis: 1 = no culling, 2 = no blending, 4 = no depth test, for every draw

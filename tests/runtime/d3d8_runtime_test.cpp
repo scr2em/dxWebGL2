@@ -23,7 +23,9 @@
  * Arguments (comma separated in the page's ?args= query): --shaders (vs.1.1 / ps.1.x scenes),
  * --scene2, --scene3, --no-s3tc (decode DXT on the CPU), --implicit (no explicit swap control),
  * --reset (IDirect3DDevice8::Reset in the middle), --debug (GL error checks), --frames=N (long run),
- * --yield (emscripten_sleep(0) per presented frame), --proxy (WebGL proxied to the main thread).
+ * --yield (emscripten_sleep(0) per presented frame), --proxy (WebGL proxied to the main thread),
+ * --backend=webgl2|webgpu|auto (dxwebgl2_SetBackend; without it the library's default, AUTO), --expect-backend=webgl2|webgpu
+ * (the backend AUTO must select; the device must render through the requested or expected backend).
  */
 #include <d3d8.h>
 #include <d3dx8.h>
@@ -211,7 +213,9 @@ static IDirect3DTexture8 *MakeDXT1()
 
 
 static bool g_shaders = false;
-static int g_wantBackend = DXWEBGL2_BACKEND_WEBGL2; // the backend the device must render through (--backend=)
+/// The backend the device must render through: the one --backend= names, or --expect-backend= (what
+/// DXWEBGL2_BACKEND_AUTO has to select in the browser at hand); -1 = whichever AUTO selects (no option, --backend=auto).
+static int g_wantBackend = -1;
 static DWORD g_vs = 0, g_psMul = 0, g_psBem = 0, g_ps14 = 0;
 static IDirect3DTexture8 *g_bump = nullptr;
 static DWORD g_inlineShaders[4] = {};
@@ -1047,8 +1051,9 @@ static void RenderFrame(float t, IDirect3DTexture8 *checker, IDirect3DTexture8 *
 //------------------------------------------------------------------------------
 static void CheckAdapterAndCaps(bool shaders)
 {
-    // The requested backend, not a silent fallback (AUTO selects WebGL2 for now, docs/WEBGPU.md).
-    EXPECT(dxwebgl2_GetBackend() == g_wantBackend);
+    // The requested backend, not a silent fallback.
+    printf("BACKEND %s\n", dxwebgl2_GetBackend() == DXWEBGL2_BACKEND_WEBGPU ? "webgpu" : "webgl2");
+    EXPECT(g_wantBackend < 0 || dxwebgl2_GetBackend() == g_wantBackend);
     EXPECT(g_d3d->GetAdapterCount() == 1);
     D3DADAPTER_IDENTIFIER8 aid;
     EXPECT_HR(g_d3d->GetAdapterIdentifier(0, 0, &aid), D3D_OK);
@@ -1617,10 +1622,15 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--debug")) dxwebgl2_SetDebug(1);
         if (!strcmp(argv[i], "--scene2")) g_scene2 = true;
         if (!strcmp(argv[i], "--scene3")) g_scene3 = true;
-        // The GPU API to render through (dxwebgl2_SetBackend).
-        if (!strcmp(argv[i], "--backend=webgl2")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGL2);
+        // The GPU API to render through (dxwebgl2_SetBackend), and the one AUTO must select (--expect-backend=).
+        if (!strcmp(argv[i], "--backend=webgl2")) { dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGL2); g_wantBackend = DXWEBGL2_BACKEND_WEBGL2; }
         if (!strcmp(argv[i], "--backend=webgpu")) { dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGPU); g_wantBackend = DXWEBGL2_BACKEND_WEBGPU; }
         if (!strcmp(argv[i], "--backend=auto")) dxwebgl2_SetBackend(DXWEBGL2_BACKEND_AUTO);
+    }
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!strcmp(argv[i], "--expect-backend=webgl2")) g_wantBackend = DXWEBGL2_BACKEND_WEBGL2;
+        if (!strcmp(argv[i], "--expect-backend=webgpu")) g_wantBackend = DXWEBGL2_BACKEND_WEBGPU;
     }
     (void)blocking;
     if (g_shaders) g_mode = "shaders";

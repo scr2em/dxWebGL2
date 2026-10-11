@@ -41,21 +41,29 @@ export function chromiumPath() {
 
 /**
  * Chromium flags: WebGL2 from SwiftShader through ANGLE, and WebGPU from SwiftShader's Vulkan (without the Vulkan
- * flags requestDevice fails; they do not change what WebGL2 renders). `extra` adds flags.
+ * flags requestDevice fails; they do not change what WebGL2 renders). `extra` adds flags. `webgpu: false` leaves the
+ * WebGPU flags out: navigator.gpu still exists but requestAdapter() returns null, like a browser without WebGPU
+ * (DXWEBGL2_BACKEND_AUTO must then select WebGL2).
  */
-export function browserArgs(extra = []) {
-  return ['--use-angle=swiftshader', '--use-gl=angle', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist',
-          '--enable-webgl', '--no-sandbox', '--enable-features=SharedArrayBuffer,Vulkan', '--enable-unsafe-webgpu',
-          '--use-vulkan=swiftshader', '--use-webgpu-adapter=swiftshader', ...extra];
+export function browserArgs(extra = [], { webgpu = true } = {}) {
+  const base = ['--use-angle=swiftshader', '--use-gl=angle', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist',
+                '--enable-webgl', '--no-sandbox'];
+  if (!webgpu) return [...base, '--enable-features=SharedArrayBuffer', ...extra];
+  return [...base, '--enable-features=SharedArrayBuffer,Vulkan', '--enable-unsafe-webgpu', '--use-vulkan=swiftshader',
+          '--use-webgpu-adapter=swiftshader', ...extra];
 }
 
-export async function launchBrowser(extra = []) {
+export async function launchBrowser(extra = [], options = {}) {
   const playwright = loadPlaywright();
-  return playwright.chromium.launch({ executablePath: chromiumPath(), args: browserArgs(extra) });
+  return playwright.chromium.launch({ executablePath: chromiumPath(), args: browserArgs(extra, options) });
 }
 
-/** The backend selected on a runner's command line (--backend=webgl2|webgpu|auto), removed from `args`. */
-export function takeBackend(args, fallback = 'webgl2') {
+/**
+ * The backend selected on a runner's command line (--backend=webgl2|webgpu|auto), removed from `args`. Without the
+ * option: `fallback`, by default 'auto' = no backend option for the page, the library's default
+ * (DXWEBGL2_BACKEND_AUTO: WebGPU when the browser offers it). scripts/test.sh names the backend of every run.
+ */
+export function takeBackend(args, fallback = 'auto') {
   const i = args.findIndex((a) => a.startsWith('--backend='));
   if (i < 0) return fallback;
   const b = args[i].slice(10);
@@ -63,6 +71,26 @@ export function takeBackend(args, fallback = 'webgl2') {
   if (!['webgl2', 'webgpu', 'auto'].includes(b)) { console.error('unknown backend ' + b); process.exit(2); }
   return b;
 }
+
+/** Removes the flag `name` (e.g. '--no-webgpu-browser') from `args`; true when it was there. */
+export function takeFlag(args, name) {
+  const i = args.indexOf(name);
+  if (i < 0) return false;
+  args.splice(i, 1);
+  return true;
+}
+
+/** The value of `--name=value` in `args` (removed from it), or `fallback`. */
+export function takeOption(args, name, fallback = null) {
+  const i = args.findIndex((a) => a.startsWith(`--${name}=`));
+  if (i < 0) return fallback;
+  const v = args[i].slice(name.length + 3);
+  args.splice(i, 1);
+  return v;
+}
+
+/** The log lines of the library about WebGPU being unavailable (DXWEBGL2_BACKEND_AUTO falls back with one of them). */
+export const unavailableLines = (lines) => lines.filter((l) => /WebGPU (backend )?is not available/.test(l));
 
 /** Opens `url` in a new page and collects everything the page and its workers print. */
 export async function openPage(browser, url, viewport = { width: 700, height: 760 }) {

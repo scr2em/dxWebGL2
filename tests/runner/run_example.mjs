@@ -9,12 +9,13 @@
 // canvas and checks pixels of it.
 //
 //   node run_example.mjs <build-dir> <page.html> <screenshot.png> [--frames=N] [--expect=x,y,r,g,b[,tol]]...
-//                        [--expect-not=x,y,r,g,b[,tol]]... [--expect-colors=N] [--backend=webgl2|webgpu]
+//                        [--expect-not=x,y,r,g,b[,tol]]... [--expect-colors=N] [--backend=webgl2|webgpu|auto]
 //
 //   --expect       the pixel must equal the color (per channel tolerance, default 6)
 //   --expect-not   the pixel must differ from the color by more than the tolerance in some channel
 //   --expect-colors the canvas must show at least N distinct colors (a rendered picture, not a flat fill)
-//   --backend      the GPU API (passed to the page as -dxwebgl2-backend=...; the log must show that it is used)
+//   --backend      the GPU API (passed to the page as -dxwebgl2-backend=...; the log must show that it is used).
+//                  Without it the page gets no backend option: the library's default (AUTO) selects one
 //
 // Exit status: 0 all checks passed, 1 a check failed or the page reported an error, 2 timeout.
 import path from 'node:path';
@@ -43,7 +44,7 @@ for (const a of rest) {
 const server = await startServer(path.resolve(buildDir));
 const browser = await launchBrowser();
 const pageArgs = ['--frames=' + frames];
-if (backend !== 'webgl2') pageArgs.push('-dxwebgl2-backend=' + backend);
+if (backend !== 'auto') pageArgs.push('-dxwebgl2-backend=' + backend);
 const url = `http://127.0.0.1:${server.address().port}/${pageName}?args=${encodeURIComponent(pageArgs.join(','))}`;
 const { page, state } = await openPage(browser, url, { width: 700, height: 700 });
 state.doneMarker = 'EXAMPLE_DONE';
@@ -60,8 +61,13 @@ if (!state.done) { console.log('RESULT: TIMEOUT'); process.exit(2); }
 
 const img = decodePng(png);
 let failures = state.lines.filter((l) => l.startsWith('PAGEERROR')).length;
-if (backend === 'webgpu' && !state.lines.some((l) => l.includes('WebGPU adapter:'))) {
+const onWebGPU = state.lines.some((l) => l.includes('WebGPU adapter:'));
+if (backend === 'webgpu' && !onWebGPU) {
   console.log('FAIL the page did not render through WebGPU');
+  ++failures;
+}
+if (backend === 'webgl2' && (onWebGPU || !state.lines.some((l) => l.includes('WebGL2 renderer:')))) {
+  console.log('FAIL the page did not render through WebGL2');
   ++failures;
 }
 for (const l of state.lines.filter((x) => /WebGPU (validation|internal|out of memory) error/.test(x))) { console.log('FAIL ' + l); ++failures; }

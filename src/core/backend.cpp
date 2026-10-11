@@ -15,7 +15,9 @@ namespace dxwebgl2 {
 
 Backend *CreateWebGL2Backend(); // core/gl/gl_backend.cpp
 #ifdef DXWEBGL2_HAVE_WEBGPU
-Backend *CreateWebGPUBackend(); // core/webgpu/wgpu_backend.cpp: null when WebGPU is not usable (the reason is logged)
+/// core/webgpu/wgpu_backend.cpp: the WebGPU backend with its adapter and device, or null with the reason in
+/// `unavailable` when WebGPU cannot start (the build cannot suspend, no navigator.gpu, no adapter, requestDevice failed).
+Backend *CreateWebGPUBackend(std::string &unavailable);
 #endif
 
 void PipelineState::Invalidate()
@@ -34,19 +36,34 @@ Backend *CreateBackend()
     {
     case DXWEBGL2_BACKEND_WEBGPU:
 #ifdef DXWEBGL2_HAVE_WEBGPU
-        b = CreateWebGPUBackend();
+    {
+        std::string why;
+        b = CreateWebGPUBackend(why);
         if (!b)
         {
-            Log("the WebGPU backend is not available, using WebGL2");
+            Log("the WebGPU backend is not available, using WebGL2: %s", why.c_str());
             DXW_HIT(Approximated, "WebGPU backend requested, WebGL2 used (WebGPU not available)");
         }
+    }
 #else
         Log("this build has no WebGPU backend (configure with -DDXWEBGL2_WEBGPU=ON), using WebGL2");
         DXW_HIT(Approximated, "WebGPU backend requested, WebGL2 used (not built)");
 #endif
         break;
     case DXWEBGL2_BACKEND_AUTO:
-        // WebGL2 until the WebGPU backend passes the whole test suite (docs/WEBGPU.md, section 9).
+        // WebGPU when the build has it, can wait for it (JSPI) and the browser offers an adapter and a device; WebGL2
+        // otherwise, with one log line and nothing else (WebGL2 is a full backend, not a degraded mode).
+#ifdef DXWEBGL2_HAVE_WEBGPU
+        // A canvas keeps the kind of context it was given first: once a device of this canvas rendered through
+        // WebGL2, the canvas cannot get a WebGPU context any more.
+        if (cfg.activeBackend == DXWEBGL2_BACKEND_WEBGL2 && cfg.activeCanvas == cfg.canvas) break;
+        {
+            std::string why;
+            b = CreateWebGPUBackend(why);
+            if (!b) Log("WebGPU is not available, using WebGL2: %s", why.c_str());
+        }
+#endif
+        break;
     case DXWEBGL2_BACKEND_WEBGL2:
         break;
     default:
@@ -55,6 +72,7 @@ Backend *CreateBackend()
     }
     if (!b) b = CreateWebGL2Backend();
     cfg.activeBackend = (int)b->Kind();
+    cfg.activeCanvas = cfg.canvas;
     return b;
 }
 

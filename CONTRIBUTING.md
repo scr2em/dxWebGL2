@@ -13,6 +13,9 @@ the same terms.
 * **Both backends.** A rendering change is made in both (GLSL and WGSL generation share their decisions, see
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)) and tested on both: `scripts/test.sh` runs every browser test on WebGL2
   and on WebGPU and compares their pictures.
+* **Name the backend in tests.** The default backend (`DXWEBGL2_BACKEND_AUTO`) selects WebGPU in the test browser, so a
+  runner started by hand without `--backend=` tests WebGPU: pass `--backend=webgl2` for WebGL2. `scripts/test.sh`
+  names the backend of every run, then checks AUTO itself.
 * **Do not add Microsoft SDK headers or code**, not even excerpts (`d3d8.h` of the DirectX SDK, `min-dx8-sdk`, sample
   code). Write from the public documentation and compare behavior with `tools/check_header_compat.py`
   if you have a legitimate copy of the SDK.
@@ -42,6 +45,7 @@ Tests, by directory:
 | `tests/runtime/d3d8_features_test.cpp` | feature scenes with checked pixels: border colours, provoking vertex, ps.1.x instructions, D3DX filters, state caching, clears of rectangles, fans / points / sprites / fill modes, formats, mid-frame buffer and texture updates, render target read-back, diagnostics, context loss, multisampling (`tests/runner/run_features.mjs`, 7 modes) | headless Chromium |
 | `tests/runner/run_regression.mjs` | frame hashes of the runtime test scenes against `tests/runner/reference_hashes.json`, per backend (`--update` after an intended rendering change; review the pictures first) | headless Chromium |
 | `tests/runner/compare_backends.mjs` | the runtime test scenes rendered by WebGL2 and WebGPU, compared with a tolerance (difference pictures with `--out`) | headless Chromium |
+| `tests/runner/run_auto.mjs`, `run_regression.mjs --backend=auto` | the default backend (`DXWEBGL2_BACKEND_AUTO`): the frame hashes of the backend it must select in browsers with and without WebGPU; the pages of `tests/consumer/device.cpp` (package with WebGPU, with and without JSPI, sources without WebGPU) in browsers with WebGPU, without an adapter, without `navigator.gpu`, with a failing `requestDevice` | headless Chromium |
 | `examples/` | each example is run for 40 frames and its pixels checked | headless Chromium |
 | `tools/check_*.py` | SPDX, layering, interface golden file | python |
 
@@ -50,8 +54,8 @@ Tests, by directory:
 The runtime test compares probe pixels (tolerance 6/channel) with recorded values. After an intended change, review the
 screenshots (`build/shot*.png`, `build/shot*_webgpu.png`, `build/compare/*-diff.png`), then re-record:
 `node tests/runner/record_probes.mjs build/tests` (software rasterizer recommended), and commit
-`tests/runtime/expected_probes.inc` with an explanation; the frame hashes with
-`node tests/runner/run_regression.mjs build/tests --update [--backend=webgpu]`.
+`tests/runtime/expected_probes.inc` with an explanation (recorded on WebGL2); the frame hashes with
+`node tests/runner/run_regression.mjs build/tests --update --backend=webgl2|webgpu`.
 
 ### When you change a public header
 

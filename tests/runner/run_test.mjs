@@ -7,9 +7,12 @@
 //
 // Runs the d3d8_runtime_test page in headless Chromium, saves a screenshot and exits with the test's verdict.
 //
-//   node run_test.mjs <build-dir> [screenshot.png] [test args...]
+//   node run_test.mjs <build-dir> [screenshot.png] [--no-webgpu-browser] [test args...]
 //
-// e.g. node run_test.mjs build/tests /tmp/shot.png --no-s3tc
+// e.g. node run_test.mjs build/tests /tmp/shot.png --no-s3tc --backend=webgl2
+//
+// --no-webgpu-browser starts Chromium without its WebGPU flags (no adapter: what DXWEBGL2_BACKEND_AUTO sees in a
+// browser without WebGPU); it is not passed to the test.
 //
 // Exit status: 0 the page reported "TEST_RESULT: PASS" (and, with --frames=N, kept presenting frames), 1 it reported
 // a failure, 2 it timed out.
@@ -19,19 +22,21 @@
 // stencil, formats...), --reset, --debug (GL error checks), --frames=N (long run; two screenshots are compared
 // while it renders, which shows whether frames are presented from a thread that never yields), --yield
 // (emscripten_sleep(0) per frame through the OnFramePresented hook), --backend=webgl2|webgpu|auto
-// (dxwebgl2_SetBackend; the test fails when the device does not render through the requested backend, and so does
-// this runner when WebGPU reports an error). The test prints STATS lines with the GPU API call counts of the last frame
-// and of the whole run.
+// (dxwebgl2_SetBackend; without it the library's default, AUTO), --expect-backend=webgl2|webgpu (the backend AUTO must
+// select). The test fails when the device does not render through the requested or expected backend, and so does
+// this runner when WebGPU reports an error. The test prints the backend in use (BACKEND line), STATS lines with the
+// GPU API call counts of the last frame and of the whole run, and FRAME_HASH.
 //
 // Needs the `playwright` npm package and Chromium, see browser.mjs. WebGL2 and WebGPU are provided by SwiftShader.
 import path from 'node:path';
 import { startServer } from './serve.mjs';
-import { launchBrowser, openPage, sleep } from './browser.mjs';
+import { launchBrowser, openPage, sleep, takeFlag } from './browser.mjs';
 
-export async function runTest(buildDir, shot, testArgs, { page: pageName = 'd3d8_runtime_test.html', timeoutMs = 90000 } = {}) {
+export async function runTest(buildDir, shot, testArgs,
+                              { page: pageName = 'd3d8_runtime_test.html', timeoutMs = 90000, webgpuBrowser = true } = {}) {
   const server = await startServer(path.resolve(buildDir));
   const port = server.address().port;
-  const browser = await launchBrowser();
+  const browser = await launchBrowser([], { webgpu: webgpuBrowser });
   const query = testArgs.length ? '?args=' + encodeURIComponent(testArgs.join(',')) : '';
   const { page, state } = await openPage(browser, `http://127.0.0.1:${port}/${pageName}${query}`);
   const t0 = Date.now();
@@ -58,17 +63,20 @@ export async function runTest(buildDir, shot, testArgs, { page: pageName = 'd3d8
   // Errors the WebGPU implementation reports (an invalid object makes the whole frame's commands invalid).
   const gpuErrors = lines.filter((l) => /WebGPU (validation|internal|out of memory) error/.test(l));
   if (gpuErrors.length) lines.push(`WEBGPU_ERRORS: ${gpuErrors.length}`);
-  return { lines, done: state.done, pass: /TEST_RESULT: PASS/.test(result) && !frozen && !gpuErrors.length, result };
+  const backend = (lines.map((l) => /\bBACKEND (webgl2|webgpu)\b/.exec(l)).find((m) => m) || [])[1] || null;
+  return { lines, done: state.done, pass: /TEST_RESULT: PASS/.test(result) && !frozen && !gpuErrors.length, result, backend };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const [buildDir, ...rest] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  const webgpuBrowser = !takeFlag(argv, '--no-webgpu-browser');
+  const [buildDir, ...rest] = argv;
   if (!buildDir) {
     console.error('usage: node run_test.mjs <build-dir> [screenshot.png] [test args...]');
     process.exit(2);
   }
   const shot = rest.length && !rest[0].startsWith('--') ? rest.shift() : 'd3d8_runtime_test.png';
-  const r = await runTest(buildDir, shot, rest);
+  const r = await runTest(buildDir, shot, rest, { webgpuBrowser });
   console.log(r.lines.join('\n'));
   console.log(r.done ? (r.pass ? 'RESULT: PASS' : 'RESULT: FAIL') : 'RESULT: TIMEOUT');
   process.exit(r.done ? (r.pass ? 0 : 1) : 2);

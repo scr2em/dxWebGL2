@@ -369,8 +369,9 @@ private:
     GpuObject *m_objects = nullptr;
 };
 
-/// Creates the backend selected with dxwebgl2_SetBackend (DXWEBGL2_BACKEND_AUTO picks the best available one) and
-/// records it as the active one (dxwebgl2_GetBackend).
+/// Creates the backend selected with dxwebgl2_SetBackend and records it as the active one (dxwebgl2_GetBackend).
+/// DXWEBGL2_BACKEND_AUTO selects WebGPU when the library has the backend, the application can wait for the device
+/// (JSPI) and the browser has an adapter and a device, and WebGL2 otherwise (one log line says why).
 Backend *CreateBackend();
 
 //------------------------------------------------------------------------------

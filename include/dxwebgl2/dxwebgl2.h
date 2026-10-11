@@ -34,12 +34,16 @@ const char *dxwebgl2_GetVersionString(void);
 
 /// GPU APIs the Direct3D device can render through.
 enum dxwebgl2_Backend {
-    /// The best one the browser offers. This is the default; for now it selects WebGL2 (docs/WEBGPU.md).
+    /// The best one the browser offers, the default: WebGPU when the library is built with DXWEBGL2_WEBGPU, the application
+    /// is linked with -sJSPI (or -sASYNCIFY) and the browser gives a WebGPU adapter and device; WebGL2 otherwise, with one
+    /// log line saying why WebGPU was not used (none when the library has no WebGPU backend). As with
+    /// DXWEBGL2_BACKEND_WEBGPU, a JSPI application then creates the device from code that can suspend (main, a
+    /// -sPROXY_TO_PTHREAD main, a JSPI export). A canvas that a device rendered to through WebGL2 keeps WebGL2.
     DXWEBGL2_BACKEND_AUTO = 0,
     DXWEBGL2_BACKEND_WEBGL2 = 1,
     /// WebGPU (navigator.gpu). Needs the library built with DXWEBGL2_WEBGPU and an application linked with -sJSPI (the
-    /// device creation and read-backs wait for the browser); otherwise, or when the browser has no WebGPU adapter, the
-    /// device uses WebGL2 and the reason is logged.
+    /// device creation and read-backs wait for the browser); otherwise, or when the browser has no WebGPU adapter or
+    /// device, the device uses WebGL2 and the reason is logged (and counted in the diagnostics report).
     DXWEBGL2_BACKEND_WEBGPU = 2,
 };
 /// Selects the backend of the devices created from now on (one of dxwebgl2_Backend). Call before CreateDevice().

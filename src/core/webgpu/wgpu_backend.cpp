@@ -20,11 +20,14 @@
 
 namespace dxwebgl2 {
 
-Backend *CreateWebGPUBackend()
+Backend *CreateWebGPUBackend(std::string &unavailable)
 {
+    // Every way WebGPU can be missing ends here with null (never an abort): no JSPI, no navigator.gpu, no adapter,
+    // requestDevice failing. The caller logs `unavailable` and uses WebGL2.
     WebGPUBackend *b = new WebGPUBackend();
     if (!b->Acquire())
     {
+        unavailable = b->Unavailable();
         delete b;
         return nullptr;
     }
@@ -83,6 +86,9 @@ const char *kPresentShader = R"(
 WebGPUBackend::~WebGPUBackend()
 {
     if (g_liveBackend == this) g_liveBackend = nullptr;
+    // What a failed Acquire() or a lost device left (Shutdown() releases everything of a working device).
+    ReleaseDevice();
+    if (m_instance) { wgpuInstanceRelease(m_instance); m_instance = nullptr; }
 }
 
 //------------------------------------------------------------------------------
@@ -100,9 +106,8 @@ bool WebGPUBackend::Acquire()
     if (m_device) return true;
     if (!emscripten_has_asyncify())
     {
-        Log("WebGPU is not available: the application is not linked with -sJSPI (or -sASYNCIFY), which creating the "
-            "device and reading back from the GPU need");
-        DXW_HIT(Unsupported, "WebGPU backend needs a build that can suspend (-sJSPI)");
+        m_unavailable = "the application is not linked with -sJSPI (or -sASYNCIFY), which creating the device and "
+                        "reading back from the GPU need";
         return false;
     }
     if (!m_instance)
@@ -114,7 +119,7 @@ bool WebGPUBackend::Acquire()
         m_instance = wgpuCreateInstance(&id);
         if (!m_instance)
         {
-            Log("WebGPU is not available: no instance (navigator.gpu is missing)");
+            m_unavailable = "no instance";
             return false;
         }
     }
@@ -137,7 +142,7 @@ bool WebGPUBackend::RequestDevice()
     aci.userdata1 = &ar;
     if (!WaitFuture(wgpuInstanceRequestAdapter(m_instance, &opt, aci)) || !ar.adapter)
     {
-        Log("WebGPU is not available: no adapter (%s)", ar.message.empty() ? "navigator.gpu.requestAdapter returned null" : ar.message.c_str());
+        m_unavailable = "no adapter: " + (ar.message.empty() ? std::string("navigator.gpu.requestAdapter returned null") : ar.message);
         return false;
     }
     m_adapter = ar.adapter;
@@ -167,7 +172,7 @@ bool WebGPUBackend::RequestDevice()
     g_liveBackend = this;
     if (!WaitFuture(wgpuAdapterRequestDevice(m_adapter, &dd, dci)) || !dr.device)
     {
-        Log("WebGPU is not available: requestDevice failed (%s)", dr.message.c_str());
+        m_unavailable = "requestDevice failed: " + dr.message;
         return false;
     }
     m_device = dr.device;
@@ -717,7 +722,9 @@ void WebGPUBackend::DebugDescribeBackBuffer()
 //------------------------------------------------------------------------------
 void WebGPUBackend::OnDeviceLost(int reason, const char *message)
 {
-    if (m_lost) return;
+    // A device that was never created (requestDevice failed: reason FailedCreation) is not a loss; RequestDevice()
+    // reports that failure.
+    if (m_lost || !m_device) return;
     if (reason == WGPUDeviceLostReason_Destroyed && !g_liveBackend) return;
     Log("the WebGPU device was lost (reason %d: %s)", reason, message);
     m_lost = true;
@@ -763,6 +770,7 @@ bool WebGPUBackend::RestoreContext()
     if (m_device) { wgpuDeviceRelease(m_device); m_device = nullptr; }
     if (!RequestDevice())
     {
+        Log("the WebGPU device could not be created again: %s", m_unavailable.c_str());
         m_lost = true;
         return false;
     }
