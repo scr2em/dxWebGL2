@@ -29,7 +29,7 @@ src/core/webgpu/       the WebGPU backend (optional: DXWEBGL2_WEBGPU, docs/WEBGP
 | `common.h`, `util.cpp` | configuration set through the C API (`Config`), logging, row-major `Mat4` helpers, small utilities, UTF-16 to UTF-8 |
 | `api_types.h` | the single place that decides which API headers the core speaks in (today `<d3d8.h>`; a Direct3D 9 build switches to `<d3d9.h>`) |
 | `types.h` | limits (stages, streams, constants), uniform groups, `VertexLayout`/`VertexElement` |
-| `backend.h/.cpp` | the backend interface: `Backend` (device, back buffer and presentation, device loss, resources, programs, render targets, `Clear`, `Draw`), the opaque handles `GpuBuffer`/`GpuTexture`/`GpuSurface`/`GpuSampler`, `GpuCaps`, the neutral `PipelineState`, `DrawCall`, `ClearCall`, `RenderTargetRef`, `SamplerDesc`, the `UniformSource`/`UniformSink` pair, the registry of `GpuObject`s (everything that owns backend objects, so that all of it learns about a context loss and restore), backend selection (`dxwebgl2_SetBackend`) and the CPU emulation of primitive types and fill modes |
+| `backend.h/.cpp` | the backend interface: `Backend` (device, back buffer and presentation, device loss, resources, programs, render targets, `Clear`, `Draw`), the opaque handles `GpuBuffer`/`GpuTexture`/`GpuSurface`/`GpuSampler`, `GpuCaps`, the neutral `PipelineState`, `DrawCall`, `ClearCall`, `RenderTargetRef`, `SamplerDesc`, the `UniformSource`/`UniformSink` pair, the registry of `GpuObject`s (everything that owns backend objects, so that all of it learns about a context loss and restore), backend selection (`dxwebgl2_SetBackend`), the CPU emulation of primitive types and fill modes and the padding of vertex strides the GPU APIs reject (`PaddedVertexStride`, `RepackVertices`) |
 | `diag.*`, `glcount.h` | the diagnostics: hit table of unsupported / approximated features, per-frame Direct3D and GPU API call counters, the periodic report, `-dxwebgl2-*` command line options. Off by default; every hit site tests one flag |
 | `buffer_storage.*` | `BufferStorage`: a CPU copy of a vertex/index buffer plus the backend buffer, modified ranges are uploaded lazily right before a draw |
 | `texture_storage.*` | `TextureBase`: 2D, cube and volume textures with their mip levels, a system-memory shadow copy per level, locking, upload, read-back; `SurfaceStorage`: standalone render targets and depth/stencil buffers |
@@ -50,7 +50,7 @@ src/core/webgpu/       the WebGPU backend (optional: DXWEBGL2_WEBGPU, docs/WEBGP
 | `gl_backend.cpp` | context creation and capabilities, base objects (framebuffers, white textures, scratch vertex array), back buffer (multisampled when requested) and resolve, present pass with the gamma ramp, context loss and restore |
 | `gl_resources.cpp` | the binding cache (buffer targets, texture units, upload unit), buffers, textures (storage, upload with format conversion), renderbuffers, sampler objects, read-back through a scratch framebuffer |
 | `gl_program.cpp` | GLSL generation through the core's emitters, compile/link, uniform lookup |
-| `gl_draw.cpp` | render target attachment (with substitute depth buffers), clears, state diffing of the `PipelineState`, uniform upload by group version, texture/sampler binding, vertex attributes (vertex array object cache, streaming buffers), the draw with the wireframe / flat shading rebuild |
+| `gl_draw.cpp` | render target attachment (with substitute depth buffers), clears, state diffing of the `PipelineState`, uniform upload by group version, texture/sampler binding, vertex attributes (vertex array object cache, streaming buffers, padded copies of vertices whose stride WebGL rejects), the draw with the wireframe / flat shading rebuild |
 
 GL objects remember the generation of the context they were created in; the generation changes when the context is
 lost and when it is restored, so nothing of a dead context is deleted.
@@ -114,7 +114,9 @@ are in [WEBGPU.md](WEBGPU.md).
      the values come from `Device::WriteUniforms`.
    * `BindTextures`: textures, sampler objects and base levels per stage.
    * the vertex buffers are flushed (`BufferStorage::Flush`, uploading the locked range) and the attribute pointers set
-     from the `VertexLayout` (cached vertex array objects); user-pointer draws stream through ring buffers.
+     from the `VertexLayout` (cached vertex array objects); user-pointer draws stream through ring buffers. A stride
+     WebGL rejects (not a multiple of the component size) is read from a padded copy (kept per vertex buffer and updated
+     for the vertices written since, padded while streaming for user memory).
    * `glDrawElements` / `glDrawArrays` with the primitive type mapped (wireframe fill and, without
      `WEBGL_provoking_vertex`, flat shading rebuild the index list on the CPU).
 

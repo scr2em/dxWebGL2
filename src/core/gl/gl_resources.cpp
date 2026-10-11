@@ -125,6 +125,11 @@ void WebGL2Backend::DestroyBuffer(GpuBuffer *buffer)
     {
         ForgetBuffer(b->name);
         glDeleteBuffers(1, &b->name);
+        if (b->padded)
+        {
+            ForgetBuffer(b->padded);
+            glDeleteBuffers(1, &b->padded);
+        }
     }
     delete b;
 }
@@ -136,6 +141,12 @@ void WebGL2Backend::WriteBuffer(GpuBuffer *buffer, uint32_t offset, uint32_t siz
     BindBuffer(b->target, b->name);
     if (initial) glBufferData(b->target, (GLsizeiptr)size, data, GL_DYNAMIC_DRAW);
     else glBufferSubData(b->target, offset, size, data);
+    // The padded copy (if any) is brought up to date by the next draw that needs it.
+    if (b->paddedFor)
+    {
+        if (b->staleBegin == b->staleEnd) { b->staleBegin = offset; b->staleEnd = offset + size; }
+        else { b->staleBegin = Min(b->staleBegin, offset); b->staleEnd = Max(b->staleEnd, offset + size); }
+    }
 }
 
 //------------------------------------------------------------------------------

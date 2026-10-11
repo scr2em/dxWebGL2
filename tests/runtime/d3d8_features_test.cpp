@@ -1123,6 +1123,35 @@ static void CasePrimitives()
     const XV odd[3] = {{350, 250, 0.5f, 1, 0xFFFF00FF}, {450, 250, 0.5f, 1, 0xFFFF00FF}, {350, 350, 0.5f, 1, 0xFFFF00FF}};
     for (int i = 0; i < 3; ++i) memcpy(packed + i * 22, &odd[i], sizeof(XV));
     CHECK_HR(g_dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, packed, 22));
+    // The same stride from a vertex buffer: a triangle from vertex 1, then vertices 4-6 written after that draw and drawn
+    // through an index buffer and a base vertex (the backend's aligned copy of the buffer must follow the write).
+    IDirect3DVertexBuffer8 *vb22 = nullptr;
+    IDirect3DIndexBuffer8 *ib22 = nullptr;
+    CHECK_HR(g_dev->CreateVertexBuffer(8 * 22, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED, &vb22));
+    CHECK_HR(g_dev->CreateIndexBuffer(3 * 2, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_MANAGED, &ib22));
+    if (vb22 && ib22)
+    {
+        BYTE *p;
+        CHECK_HR(vb22->Lock(0, 0, &p, 0));
+        memset(p, 0, 8 * 22);
+        const XV first[3] = {{500, 250, 0.5f, 1, 0xFF80FF00}, {600, 250, 0.5f, 1, 0xFF80FF00}, {500, 350, 0.5f, 1, 0xFF80FF00}};
+        for (int i = 0; i < 3; ++i) memcpy(p + (1 + i) * 22, &first[i], sizeof(XV));
+        CHECK_HR(vb22->Unlock());
+        WORD *ix22;
+        CHECK_HR(ib22->Lock(0, 0, (BYTE **)&ix22, 0));
+        ix22[0] = 0; ix22[1] = 1; ix22[2] = 2;
+        CHECK_HR(ib22->Unlock());
+        CHECK_HR(g_dev->SetStreamSource(0, vb22, 22));
+        CHECK_HR(g_dev->DrawPrimitive(D3DPT_TRIANGLELIST, 1, 1));
+        CHECK_HR(vb22->Lock(4 * 22, 3 * 22, &p, 0));
+        const XV second[3] = {{50, 380, 0.5f, 1, 0xFF0080FF}, {150, 380, 0.5f, 1, 0xFF0080FF}, {50, 470, 0.5f, 1, 0xFF0080FF}};
+        for (int i = 0; i < 3; ++i) memcpy(p + i * 22, &second[i], sizeof(XV));
+        CHECK_HR(vb22->Unlock());
+        CHECK_HR(g_dev->SetIndices(ib22, 4));
+        CHECK_HR(g_dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 3, 0, 1));
+        g_dev->SetStreamSource(0, nullptr, 0);
+        g_dev->SetIndices(nullptr, 0);
+    }
     CHECK_HR(g_dev->EndScene());
     Grab();
     Expect("indexed fan with a base vertex", 100, 80, 0x00FF00);
@@ -1142,9 +1171,13 @@ static void CasePrimitives()
     Expect("wireframe: no inside", 70, 270, 0x101010, 2);
     Expect("point fill: a corner", 200, 250, 0x00FFFF);
     Expect("point fill: no inside", 220, 270, 0x101010, 2);
-    ExpectKnown("stride of 22 bytes", 370, 270, 0xFF00FF, "WebGL needs vertex strides that are a multiple of the component size");
+    Expect("stride of 22 bytes", 370, 270, 0xFF00FF);
+    Expect("stride of 22 bytes from a vertex buffer", 520, 270, 0x80FF00);
+    Expect("stride of 22 bytes, written after a draw, indexed with a base vertex", 70, 400, 0x0080FF);
     vb->Release();
     ib->Release();
+    if (vb22) vb22->Release();
+    if (ib22) ib22->Release();
     if (quad) quad->Release();
 }
 

@@ -41,6 +41,12 @@ struct GLBuffer final : GpuBuffer
     GLuint name = 0;
     GLenum target = GL_ARRAY_BUFFER;
     uint32_t generation = 0;
+    /// A vertex buffer drawn with a stride WebGL rejects is drawn from `padded`, a copy with the vertices padded to a
+    /// multiple of 4 bytes (WebGL2Backend::PaddedVertices), made for vertices of `paddedFor` bytes (0: no copy yet).
+    /// [staleBegin, staleEnd) are the bytes written to the buffer since the copy was brought up to date.
+    GLuint padded = 0;
+    uint32_t paddedFor = 0;
+    uint32_t staleBegin = 0, staleEnd = 0;
 };
 
 struct GLTexture final : GpuTexture
@@ -181,7 +187,8 @@ private:
     void ApplyPipeline(const PipelineState &want);
     void UploadUniforms(GLProgram *p, const uint32_t *versions, UniformSource &source);
     void BindTextures(const ProgramKey &key, const TextureBinding *bindings);
-    bool BindAttributes(const DrawCall &c, UINT pointerBase, GLuint userBuffer);
+    bool BindAttributes(const DrawCall &c, UINT pointerBase, GLuint userBuffer, UINT userStride);
+    GLuint PaddedVertices(BufferStorage *vb, UINT stride);
     void SetAttributePointers(const VertexLayout *layout, const GLuint *bufs, const UINT *strides, UINT pointerBase,
                               uint32_t oldEnabled, uint32_t *newEnabled);
     void EvictVao();
@@ -266,6 +273,7 @@ private:
 
     //-- Scratch ---------------------------------------------------------------------------------
     std::vector<uint8_t> m_uploadScratch;
+    std::vector<uint8_t> m_padScratch;  ///< vertices padded to a stride WebGL accepts
     std::vector<uint32_t> m_triScratch, m_lineScratch;
     unsigned m_drawCounter = 0;
 };

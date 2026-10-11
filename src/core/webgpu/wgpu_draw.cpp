@@ -676,9 +676,9 @@ bool WebGPUBackend::Draw(const DrawCall &c)
     if (indexed) indexSrc = userData ? static_cast<const uint8_t *>(c.userIndices) : c.indexBuffer->Data() + (size_t)c.start * isz;
     const IndexFetch fetch = {indexed ? indexSrc : nullptr, c.index32, userData ? 0u : (indexed ? c.baseVertex : 0u),
                               userData ? 0u : (indexed ? 0u : c.start)};
-    // Strides that are not a multiple of 4 (WebGPU's arrayStride) are repacked.
+    // Strides that are not a multiple of 4 (WebGPU's arrayStride) are repacked (PaddedVertexStride, core/backend.h).
     bool repack[WG_MAX_SLOTS] = {};
-    for (uint32_t s = 0; s < slotCount; ++s) repack[s] = (slotStride[s] & 3) != 0;
+    for (uint32_t s = 0; s < slotCount; ++s) repack[s] = PaddedVertexStride(slotStride[s]) != slotStride[s];
     const bool gather = points && indexed; // indexed point lists: the vertices are gathered, then drawn as instances
 
     std::vector<uint32_t> *indices = nullptr;
@@ -718,7 +718,7 @@ bool WebGPUBackend::Draw(const DrawCall &c)
     uint32_t streamBytes = 0;
     for (uint32_t s = 0; s < slotCount; ++s)
     {
-        const uint32_t stride = (slotStride[s] + 3) & ~3u;
+        const uint32_t stride = PaddedVertexStride(slotStride[s]);
         if (gather) streamBytes += c.count * stride + 16;
         else if (userData && slotStream[s] == 0) streamBytes += vertexCount * stride + 16;
         else if (repack[s]) streamBytes += (c.streams[slotStream[s]].buffer->Size() / Max<uint32_t>(1, slotStride[s]) + 1) * stride + 16;
@@ -734,7 +734,7 @@ bool WebGPUBackend::Draw(const DrawCall &c)
     for (uint32_t s = 0; s < slotCount; ++s)
     {
         const uint32_t stride = slotStride[s];
-        const uint32_t outStride = (stride + 3) & ~3u;
+        const uint32_t outStride = PaddedVertexStride(stride);
         const uint8_t *src;
         uint32_t srcVertices;
         WGBuffer *gb = nullptr;
@@ -768,9 +768,7 @@ bool WebGPUBackend::Draw(const DrawCall &c)
         {
             const uint32_t n = gb ? srcVertices : vertexCount;
             const uint32_t at = StreamAlloc(n * outStride, 4);
-            if (outStride == stride) memcpy(&m_streamStaging[at], src, (size_t)n * stride);
-            else
-                for (uint32_t i = 0; i < n; ++i) memcpy(&m_streamStaging[at + (size_t)i * outStride], src + (size_t)i * stride, stride);
+            RepackVertices(src, stride, n, outStride, &m_streamStaging[at]);
             slotBuffer[s] = m_streamBuffer;
             slotOffset[s] = at;
             slotStride[s] = outStride;

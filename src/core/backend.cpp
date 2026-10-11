@@ -154,6 +154,23 @@ void TrianglesToLines(const std::vector<uint32_t> &tri, std::vector<uint32_t> &o
     }
 }
 
+//------------------------------------------------------------------------------
+// Vertex strides
+//------------------------------------------------------------------------------
+void RepackVertices(const uint8_t *src, uint32_t stride, uint32_t count, uint32_t outStride, uint8_t *dst)
+{
+    if (outStride == stride)
+    {
+        memcpy(dst, src, (size_t)count * stride);
+        return;
+    }
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        memcpy(dst + (size_t)i * outStride, src + (size_t)i * stride, stride);
+        memset(dst + (size_t)i * outStride + stride, 0, outStride - stride);
+    }
+}
+
 } // namespace dxwebgl2
 
 extern "C" {

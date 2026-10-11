@@ -65,7 +65,7 @@ the report is off.
 | Drawing | `DrawPrimitive`, `DrawIndexedPrimitive`, `DrawPrimitiveUP`, `DrawIndexedPrimitiveUP` | yes (point/line lists and strips, triangle lists/strips/fans; fill modes wireframe and point are rebuilt as lines/points) |
 | | `ProcessVertices` | no (`D3DERR_INVALIDCALL`) |
 | | `DrawRectPatch`, `DrawTriPatch`, `DeletePatch` | no (`D3DERR_INVALIDCALL`) |
-| Streams | `SetStreamSource`, `GetStreamSource`, `SetIndices`, `GetIndices` | yes (`BaseVertexIndex` honoured) |
+| Streams | `SetStreamSource`, `GetStreamSource`, `SetIndices`, `GetIndices` | yes (`BaseVertexIndex` honoured; any stride up to 255: strides WebGL / WebGPU reject are drawn from a padded copy) |
 | Vertex shaders | `CreateVertexShader`, `SetVertexShader`, `GetVertexShader`, `DeleteVertexShader`, `Set/GetVertexShaderConstant`, `GetVertexShaderDeclaration`, `GetVertexShaderFunction` | yes: vs.1.1 (96 constants) and FVF codes as shader handles |
 | Pixel shaders | `CreatePixelShader`, `SetPixelShader`, `GetPixelShader`, `DeletePixelShader`, `Set/GetPixelShaderConstant`, `GetPixelShaderFunction` | yes: ps.1.0-1.4 (32 constants) |
 

@@ -406,14 +406,60 @@ void WebGL2Backend::BindTextures(const ProgramKey &key, const TextureBinding *bi
 //------------------------------------------------------------------------------
 static inline GLuint NameOf(GpuBuffer *b) { return b ? static_cast<GLBuffer *>(b)->name : 0; }
 
+/// WebGL requires the stride and the offset of a vertex attribute to be multiples of the size of its component type
+/// (INVALID_OPERATION otherwise): true when the elements of `stream` can be read from vertices of `stride` bytes.
+static bool StrideFitsWebGL(const VertexLayout *layout, int stream, UINT stride)
+{
+    for (int i = 0; i < layout->count; ++i)
+    {
+        const VertexElement &e = layout->elems[i];
+        if (e.stream != stream) continue;
+        const UINT component = e.glType == 0 ? 4 : (e.glType == 2 ? 2 : 1);
+        if (stride % component || e.offset % component) return false;
+    }
+    return true;
+}
+
+/// The vertices of `vb` padded to a stride WebGL accepts (PaddedVertexStride), in a second GL buffer kept with the
+/// buffer: made once, then only the vertices written since (the stale range WriteBuffer records) are copied again, so a
+/// static buffer is repacked once.
+GLuint WebGL2Backend::PaddedVertices(BufferStorage *vb, UINT stride)
+{
+    GLBuffer *b = static_cast<GLBuffer *>(vb->Gpu());
+    if (!b || !stride) return 0;
+    const UINT outStride = PaddedVertexStride(stride);
+    const uint32_t count = vb->Size() / stride;
+    uint32_t first = 0, last = count;
+    const bool whole = !b->padded || b->paddedFor != stride;
+    if (!whole)
+    {
+        if (b->staleBegin == b->staleEnd) return b->padded;
+        first = Min(count, b->staleBegin / stride);
+        last = Min(count, (b->staleEnd + stride - 1) / stride);
+    }
+    if (!b->padded) glGenBuffers(1, &b->padded);
+    m_padScratch.resize((size_t)(last - first) * outStride);
+    RepackVertices(vb->Data() + (size_t)first * stride, stride, last - first, outStride, m_padScratch.data());
+    BindBuffer(GL_ARRAY_BUFFER, b->padded);
+    if (whole) glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)m_padScratch.size(), m_padScratch.data(), GL_DYNAMIC_DRAW);
+    else if (last > first) glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)first * outStride, (GLsizeiptr)m_padScratch.size(), m_padScratch.data());
+    g_gl.uploadBytes += (uint32_t)m_padScratch.size();
+    b->paddedFor = stride;
+    b->staleBegin = b->staleEnd = 0;
+    DXW_HIT(Perf, "vertex stride %u is not a multiple of the component size: vertices repacked to %u bytes", stride, outStride);
+    return b->padded;
+}
+
 /// Sets up the vertex attributes of the layout and streams of the draw and makes the vertex array object
 /// that holds them current. Layouts, buffers and strides that were drawn with before are served from a
 /// cache of vertex array objects (one GL call to bind instead of one per attribute); the cache is keyed
 /// without the base vertex because indexed draws pass it to the draw call
 /// (WEBGL_draw_instanced_base_vertex_base_instance) and streamed data is placed at multiples of the
 /// vertex size. `pointerBase` is a vertex offset applied to the attribute pointers instead, for browsers
-/// without that extension; such draws use the uncached scratch vertex array.
-bool WebGL2Backend::BindAttributes(const DrawCall &c, UINT pointerBase, GLuint userBuffer)
+/// without that extension; such draws use the uncached scratch vertex array. User vertices were streamed to
+/// `userBuffer` with `userStride` (padded when WebGL would reject the draw's stride); buffers with such a stride are
+/// read from their padded copy.
+bool WebGL2Backend::BindAttributes(const DrawCall &c, UINT pointerBase, GLuint userBuffer, UINT userStride)
 {
     const VertexLayout *layout = c.layout;
     if (!layout->count) return false;
@@ -433,7 +479,7 @@ bool WebGL2Backend::BindAttributes(const DrawCall &c, UINT pointerBase, GLuint u
         if (userData && st == 0)
         {
             bufs[0] = userBuffer;
-            strides[0] = c.userStride;
+            strides[0] = userStride;
         }
         else
         {
@@ -441,6 +487,11 @@ bool WebGL2Backend::BindAttributes(const DrawCall &c, UINT pointerBase, GLuint u
             if (!vb) return false;
             bufs[st] = NameOf(vb->Flush());
             strides[st] = c.streams[st].stride ? c.streams[st].stride : layout->stride[st];
+            if (bufs[st] && !StrideFitsWebGL(layout, st, strides[st]))
+            {
+                bufs[st] = PaddedVertices(vb, strides[st]);
+                strides[st] = PaddedVertexStride(strides[st]);
+            }
         }
         if (streamsUsed < VAO_KEY_STREAMS)
         {
@@ -640,10 +691,22 @@ bool WebGL2Backend::Draw(const DrawCall &c)
     // Vertex data. User data is appended to the streaming buffer at a multiple of the vertex size, so
     // that its position is a vertex number ("vertexBase") like the base vertex of indexed draws.
     UINT vertexBase = 0;
+    UINT userStride = c.userStride;
     if (userData)
     {
-        const size_t bytes = (size_t)c.userVertexCount * c.userStride;
-        vertexBase = (UINT)(UploadStream(c.userVertices, bytes, false, c.userStride) / c.userStride);
+        const void *src = c.userVertices;
+        if (!StrideFitsWebGL(c.layout, 0, userStride))
+        {
+            // A stride WebGL rejects: the vertices are streamed padded (PaddedVertexStride).
+            const UINT padded = PaddedVertexStride(userStride);
+            m_padScratch.resize((size_t)c.userVertexCount * padded);
+            RepackVertices(static_cast<const uint8_t *>(src), userStride, c.userVertexCount, padded, m_padScratch.data());
+            DXW_HIT(Perf, "vertex stride %u is not a multiple of the component size: vertices repacked to %u bytes", userStride, padded);
+            src = m_padScratch.data();
+            userStride = padded;
+        }
+        const size_t bytes = (size_t)c.userVertexCount * userStride;
+        vertexBase = (UINT)(UploadStream(src, bytes, false, userStride) / userStride);
     }
     else
         for (int i = 0; i < MAX_STREAMS; ++i)
@@ -651,7 +714,7 @@ bool WebGL2Backend::Draw(const DrawCall &c)
     // Where the base vertex is applied: by the draw call (extension), or by the attribute pointers.
     const UINT totalBase = userData ? vertexBase : (indexed ? c.baseVertex : 0);
     const bool baseInDraw = indexed && m_caps.baseVertex && !rebuild;
-    if (!BindAttributes(c, baseInDraw || !indexed || rebuild ? 0 : totalBase, m_streamVB)) return false;
+    if (!BindAttributes(c, baseInDraw || !indexed || rebuild ? 0 : totalBase, m_streamVB, userStride)) return false;
     GL_STAGE_CHECK("attributes", &c);
 
     // Index data.

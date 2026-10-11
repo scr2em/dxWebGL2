@@ -396,4 +396,17 @@ void ExpandTriangles(Topology topology, uint32_t primitiveCount, const IndexFetc
 /// The edges of a triangle list as a line list (wireframe fill mode).
 void TrianglesToLines(const std::vector<uint32_t> &triangles, std::vector<uint32_t> &out);
 
+//------------------------------------------------------------------------------
+// Vertex strides the GPU APIs reject, shared by the backends
+//
+// Direct3D accepts any vertex stride; WebGPU needs a vertex buffer's arrayStride to be a multiple of 4, WebGL the stride
+// and the offset of an attribute to be multiples of its component size. Such vertices are drawn from a copy whose
+// vertices are padded to a multiple of 4 bytes. The offsets of the elements inside a vertex need no change: every
+// D3DVSDT_* type, D3DVSD_SKIP count and FVF component is a whole number of 4-byte words.
+//------------------------------------------------------------------------------
+/// The stride of the padded copy.
+inline uint32_t PaddedVertexStride(uint32_t stride) { return (stride + 3) & ~3u; }
+/// Copies `count` vertices of `stride` bytes from `src` to `dst`, `outStride` bytes apart (the padding is zeroed).
+void RepackVertices(const uint8_t *src, uint32_t stride, uint32_t count, uint32_t outStride, uint8_t *dst);
+
 } // namespace dxwebgl2

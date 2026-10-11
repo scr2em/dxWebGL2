@@ -6,7 +6,8 @@ it, the application can wait for the device (JSPI) and the browser gives an adap
 pixel shaders 1.x alike. It is built with `-DDXWEBGL2_WEBGPU=ON` (Emscripten's emdawnwebgpu port), the application is
 linked with `-sJSPI`; `dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGL2|WEBGPU)` or `-dxwebgl2-backend=webgl2|webgpu` force a
 backend. Every runtime, feature and regression test runs on both backends, and the choice of AUTO is tested in browsers
-with and without WebGPU (section 7).
+with and without WebGPU (section 7). Vertex strides that are not a multiple of 4 are padded for WebGL2 as for WebGPU now
+(section 10).
 
 ```
   your Direct3D 8 code
@@ -45,7 +46,8 @@ The key types: `DrawCall` (topology including fans, fill mode, counts, base vert
 them to GL uniforms or into a uniform block), `RenderTargetRef` (refers to the front end's storage objects so that the
 binding survives a device loss), `SamplerDesc` (Direct3D numbering) and `GpuObject` (everything that owns backend
 objects; told about a loss and a restore). The CPU emulation of primitive types and fill modes that both backends need
-(`ExpandTriangles`, `TrianglesToLines`) is part of the interface module.
+(`ExpandTriangles`, `TrianglesToLines`) and the padding of vertex strides the GPU APIs reject (`PaddedVertexStride`,
+`RepackVertices`) are part of the interface module.
 
 What step 2 changed in the interface: `WriteBuffer`'s `data` is documented to point into the caller's copy of the whole
 buffer (`BufferStorage` always did that), so that a backend can widen a range to whole 4-byte words. Nothing else:
@@ -140,7 +142,7 @@ request of 2 or more samples is rendered with 4 (`GpuCaps::maxSamples` = 4, the 
 | Depth formats | `depth16unorm`, `depth24plus`, `depth24plus-stencil8` | `D16` -> `depth16unorm`; `D24X8`, `D32` -> `depth24plus`; `D24S8`, `D24X4S4`, `D15S1` -> `depth24plus-stencil8` |
 | Inputs the vertex format does not provide (GL reads (0,0,0,1)) | every shader input needs a buffer | the vertex stage is generated per input signature (section 4) and uses (0,0,0,1) for the others |
 | Integer vertex data (`UBYTE4`, `SHORT2`, `SHORT4` without normalization) | integer formats are read as integers | `uint8x4` / `sint16x2|4`, converted to float in the shader (the signature says which) |
-| Vertex strides that are not a multiple of 4 | `arrayStride` must be | the vertices are repacked through the stream ring (WebGL2 cannot draw them at all, see section 7) |
+| Vertex strides that are not a multiple of 4 | `arrayStride` must be | the vertices are repacked (`RepackVertices`, `PaddedVertexStride`) through the stream ring. WebGL2 needs the same for strides that are not a multiple of the component size: it keeps a padded copy per vertex buffer (section 10) |
 | Flat shading | `@interpolate(flat)` takes the first vertex, like Direct3D | none needed |
 | Base vertex | `drawIndexed(..., baseVertex)` | none needed |
 | Multisampling 2-16 samples | 1 or 4 samples | 4 for every request (the front end reports the clamped type) |
@@ -266,12 +268,13 @@ or that prefer WebGL2, select it explicitly.
   `--out` keeps the pictures and a difference picture per scene. `scripts/test.sh` runs it.
 * **Feature tests** for the emulations (both backends): `clears` (rectangles, after draws, depth and stencil
   rectangles, several rectangles, the viewport), `primitives` (indexed fan with a base vertex, point lists from
-  buffers with and without indices, point sprite orientation, wireframe and point fill, a 22-byte stride), `formats`
-  (`X1R5G5B5`, `X4R4G4B4`, `R8G8B8`, `A4L4`, `X8R8G8B8` with alpha 0 in memory, DXT1 of 6x6), `updates` (a dynamic
+  buffers with and without indices, point sprite orientation, wireframe and point fill, a 22-byte stride from user
+  memory and from a vertex buffer), `formats` (`X1R5G5B5`, `X4R4G4B4`, `R8G8B8`, `A4L4`, `X8R8G8B8` with alpha 0 in
+  memory, DXT1 of 6x6), `updates` (a dynamic
   vertex buffer rewritten with `DISCARD` and appended with `NOOVERWRITE` within a frame, a texture updated between two
-  draws, render targets of 32 and 16 bits read back, a lockable render target). Two checks are known to fail on WebGL2
-  and are reported as `XFAIL` there: WebGL rejects vertex strides that are not a multiple of the component size, and
-  S3TC textures whose size is not a multiple of 4 (they render black).
+  draws, render targets of 32 and 16 bits read back, a lockable render target). One check is known to fail on WebGL2
+  and is reported as `XFAIL` there: S3TC textures whose size is not a multiple of 4 (they render black). Until step 3
+  the 22-byte stride failed there too (section 10).
 * **Performance**: `d3d8_runtime_test --perf=N` draws N lit, textured quads per frame from a vertex buffer (world
   matrix and material per draw, texture every 8 draws) and prints the CPU time per frame on the rendering thread and the
   API calls per frame (the `STATS` categories count WebGPU calls for the WebGPU backend: draw = draws, state =
@@ -357,12 +360,21 @@ draw here: the program's block when the world matrix or the material changed).
 * **AUTO prefers WebGPU** (`src/core/backend.cpp`, `src/core/webgpu/wgpu_backend.*`): section 6. `CreateWebGPUBackend`
   returns null with the reason instead of logging it (the caller logs one line); a `requestDevice()` that fails is not
   reported as a device loss; a failed attempt releases its instance and adapter.
+* **Vertex strides WebGL rejects** (`src/core/gl/gl_draw.cpp`, `gl_resources.cpp`): WebGL requires the stride and the
+  offset of an attribute to be multiples of its component size. A stream that breaks the rule is drawn from a copy
+  padded to `PaddedVertexStride` (a multiple of 4; element offsets in Direct3D 8 vertices are multiples of 4 already):
+  user memory is padded while it is streamed, a vertex buffer gets a second GL buffer that is filled once and then only
+  for the vertices written since (`WriteBuffer` records the range), so a static buffer is repacked once. The helpers
+  (`PaddedVertexStride`, `RepackVertices`, `core/backend.h`) are shared with the WebGPU backend's repacking.
+* Feature checks: the 22-byte stride passes on WebGL2; added: a 22-byte stride from a vertex buffer, rewritten
+  after a draw and drawn with a base vertex.
 * The WebGL2 and WebGPU frame hashes are unchanged.
 
 ## 11. Next steps
 
 1. Dynamic buffers: rename (a new `GPUBuffer` per rewrite of a buffer used in the frame, recycled after the submit)
-   instead of submitting; NOOVERWRITE appends could skip both when the written range was not drawn from.
+   instead of submitting; NOOVERWRITE appends could skip both when the written range was not drawn from. The WebGPU
+   backend could keep a padded copy per vertex buffer like WebGL2 instead of repacking per draw.
 2. `ShaderIR` (ROADMAP M2) for both shader languages, before shader model 2/3.
 3. Optional features: `clip-distances` for user clip planes, `texture-component-swizzle` for luminance / alpha formats
    (no expansion), timestamp queries for GPU timings.
