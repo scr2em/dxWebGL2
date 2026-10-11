@@ -42,7 +42,7 @@ TextureBase::TextureBase(Backend *backend, D3DRESOURCETYPE type, UINT w, UINT h,
     m_levelCount = (levels == 0 || levels > full) ? full : levels;
     m_isRT = (usage & D3DUSAGE_RENDERTARGET) != 0;
     if (m_isRT && !m_info->renderTarget) return;
-    m_decode = m_info->conv == UploadConv::DXT && !caps.s3tc;
+    m_decode = DecodeDxtOnCpu(*m_info, m_width, m_height, m_kind == TextureKind::Volume, caps.s3tc);
 
     m_levels.resize(m_faces * m_levelCount);
     for (uint32_t f = 0; f < m_faces; ++f)

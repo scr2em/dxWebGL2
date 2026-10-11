@@ -88,7 +88,7 @@ the report is off.
 | R8G8B8 | yes | no | |
 | A8, L8, A8L8, A4L4 | yes | no | |
 | V8U8, Q8W8V8U8 | yes | no | signed bump map formats (for `texbem`) |
-| DXT1-DXT5 | yes | no | hardware S3TC when the browser exposes it, CPU decoder otherwise; CPU encoder for conversions |
+| DXT1-DXT5 | yes | no | hardware S3TC / BC when the browser exposes it, CPU decoder otherwise and for textures whose size is not a multiple of 4 and volumes (`DecodeDxtOnCpu`); CPU encoder for conversions |
 | D16, D24X8, D24S8, D32, D15S1, D24X4S4, D16_LOCKABLE | n/a | depth/stencil surfaces | |
 | R3G3B2, A8R3G3B2, P8, A8P8, L6V5U5, X8L8V8U8, V16U16, W11V11U10, UYVY, YUY2 | no | no | image surfaces / data only |
 

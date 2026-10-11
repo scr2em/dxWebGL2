@@ -87,21 +87,6 @@ static bool ColorNear(DWORD got, DWORD want, int tol)
     return true;
 }
 
-/// A check that fails on WebGL2 for a known reason of that backend: reported as XFAIL there (not a failure).
-static bool ExpectKnown(const char *label, int x, int y, DWORD rgb, const char *webgl2Reason, int tol = 4)
-{
-    const DWORD got = g_px[y * W + x] & 0xFFFFFF;
-    const bool ok = ColorNear(got, rgb, tol);
-    if (!ok && dxwebgl2_GetBackend() == DXWEBGL2_BACKEND_WEBGL2)
-    {
-        printf("CHECK %s %s XFAIL (%d,%d) got %06x want %06x: known WebGL2 limitation, %s\n", g_case, label, x, y, (unsigned)got,
-               (unsigned)rgb, webgl2Reason);
-        return false;
-    }
-    Report(label, ok, "(%d,%d) got %06x want %06x", x, y, (unsigned)got, (unsigned)rgb);
-    return ok;
-}
-
 static bool Expect(const char *label, int x, int y, DWORD rgb, int tol = 4)
 {
     const DWORD got = g_px[y * W + x] & 0xFFFFFF;
@@ -1248,22 +1233,40 @@ static void CaseFormats()
         Rect(20, 150, 100, 230, 0.5f, 0xFFFFFFFF);
         g_dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
     }
+    // A DXT1 volume texture (decoded on the CPU by both backends: neither has 3D S3TC / BC textures).
+    IDirect3DVolumeTexture8 *vol = nullptr;
+    if (SUCCEEDED(g_dev->CreateVolumeTexture(4, 4, 2, 1, 0, D3DFMT_DXT1, D3DPOOL_MANAGED, &vol)) && vol)
+    {
+        D3DLOCKED_BOX lb;
+        CHECK_HR(vol->LockBox(0, &lb, nullptr, 0));
+        const WORD c = (WORD)((0x30 >> 3) << 11 | (0x70 >> 2) << 5 | (0xC0 >> 3));
+        for (int z = 0; z < 2; ++z)
+        {
+            BYTE *b = (BYTE *)lb.pBits + z * lb.SlicePitch;
+            b[0] = (BYTE)c; b[1] = (BYTE)(c >> 8); b[2] = (BYTE)c; b[3] = (BYTE)(c >> 8);
+            b[4] = b[5] = b[6] = b[7] = 0;
+        }
+        CHECK_HR(vol->UnlockBox(0));
+        g_dev->SetTexture(0, vol);
+        Rect(120, 150, 200, 230, 0.5f, 0xFFFFFFFF, 0, 0, 1, 1, 0.25f);
+    }
+    else
+        Report("DXT1 volume created", false, "CreateVolumeTexture failed");
     g_dev->SetTexture(0, nullptr);
     CHECK_HR(g_dev->EndScene());
     Grab();
+    if (vol) Expect("DXT1 volume sampled", 160, 190, 0x3171C6, 6);
     n = 0;
     for (const F &f : formats)
     {
         char label[64];
         snprintf(label, sizeof label, "%s sampled", f.name);
-        if (f.fmt == D3DFMT_DXT1)
-            ExpectKnown(label, 60 + (n % 6) * 100, 60, f.expect, "S3TC textures need a size that is a multiple of 4", 6);
-        else
-            Expect(label, 60 + (n % 6) * 100, 60, f.expect, 6);
+        Expect(label, 60 + (n % 6) * 100, 60, f.expect, 6);
         ++n;
     }
     Expect("X8R8G8B8 blends as opaque", 60, 190, 0x3070C0, 6);
     for (IDirect3DTexture8 *t : keep) t->Release();
+    if (vol) vol->Release();
 }
 
 static void CaseUpdates()

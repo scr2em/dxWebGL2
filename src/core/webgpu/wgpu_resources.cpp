@@ -244,9 +244,9 @@ GpuTexture *WebGPUBackend::CreateTexture(const TextureDesc &d)
     t->uid = m_nextUid++;
     const FormatInfo *info = GetFormatInfo(d.format);
     t->renderTarget = info && info->renderTarget && d.kind != TextureKind::Volume;
-    // BC textures need a size that is a multiple of the block size, and 3D BC textures a feature: decode those.
-    bool decode = d.decodeDxt || !m_bc;
-    if (info && info->blockBytes && ((d.width & 3) || (d.height & 3) || d.kind == TextureKind::Volume)) decode = true;
+    // DXT is decoded on the CPU when the core decided so (DecodeDxtOnCpu: no texture-compression-bc, a size that is not
+    // a multiple of the block size, volumes); BC textures otherwise.
+    const bool decode = d.decodeDxt || !m_bc;
     t->fmt = MapFormat(d.format, decode);
     if (t->fmt.conv == WgConv::Expand && info && info->blockBytes) t->fmt = MapFormat(d.format, true);
     CreateTextureObject(t);
@@ -305,7 +305,15 @@ void WebGPUBackend::WriteTexture(GpuTexture *texture, const TextureRegion &r, co
     const uint32_t rows = r.depth > 1 ? r.height * r.depth : r.height;
     uint32_t pitch = rowPitch;
     const uint8_t *data;
-    if (r.depth > 1 || t->desc.kind == TextureKind::Volume)
+    if (t->fmt.conv == WgConv::DecodeDXT && r.depth > 1)
+    {
+        // DXT slices end with a partial block row when their height is not a multiple of 4: decoded one by one.
+        pitch = w * 4;
+        m_uploadScratch.resize((size_t)w * h * 4 * r.depth);
+        DecodeDXTVolume(t->desc.format, src, rowPitch, w, h, r.depth, m_uploadScratch.data(), true);
+        data = m_uploadScratch.data();
+    }
+    else if (r.depth > 1 || t->desc.kind == TextureKind::Volume)
         data = ConvertForUpload(*t, src, rowPitch, w, rows, pitch); // the slices of a volume level are consecutive rows
     else
         data = ConvertForUpload(*t, src, rowPitch, w, h, pitch);

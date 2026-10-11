@@ -66,9 +66,20 @@ uint32_t UnpackPixel(D3DFORMAT format, const uint8_t *p);
 /// Writes one D3DFMT_A8R8G8B8 pixel. Not for compressed formats.
 void PackPixel(D3DFORMAT format, uint32_t argb, uint8_t *p);
 
+/// Whether the DXT data of a texture is decoded to RGBA8 on the CPU instead of being handed to the GPU compressed
+/// (TextureDesc::decodeDxt, the decision of both backends): without S3TC / BC support (`s3tc` false), when the top level
+/// is not made of whole 4x4 blocks (WEBGL_compressed_texture_s3tc and WebGPU's BC formats require a multiple of 4 there;
+/// the smaller mip levels of such a texture may be 1 or 2 pixels), and for volume textures (neither WebGL2 nor WebGPU
+/// without an optional feature has 3D S3TC / BC textures). False for formats that are not block compressed.
+bool DecodeDxtOnCpu(const FormatInfo &info, uint32_t width, uint32_t height, bool volume, bool s3tc);
+
 /// Decodes DXT1-5 to 4 bytes per pixel, either D3D order (B,G,R,A) or GL RGBA.
 void DecodeDXT(D3DFORMAT format, const uint8_t *src, uint32_t srcPitch, uint32_t w, uint32_t h,
                uint8_t *dst, uint32_t dstPitch, bool rgba);
+/// DecodeDXT for the `depth` slices of a volume level (each slice FormatRows(h) block rows), written one after the other
+/// to `dst` with rows of w * 4 bytes.
+void DecodeDXTVolume(D3DFORMAT format, const uint8_t *src, uint32_t srcPitch, uint32_t w, uint32_t h, uint32_t depth,
+                     uint8_t *dst, bool rgba);
 /// Encodes A8R8G8B8 pixels to DXT1/3/5 (simple range-fit compressor).
 bool EncodeDXT(D3DFORMAT format, const uint8_t *srcArgb, uint32_t srcPitch, uint32_t w, uint32_t h,
                uint8_t *dst, uint32_t dstPitch);

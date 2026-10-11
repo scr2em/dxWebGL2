@@ -485,7 +485,7 @@ HRESULT Device::CreateTexture(UINT w, UINT h, UINT levels, DWORD usage, D3DFORMA
         t->Release();
         return D3DERR_INVALIDCALL;
     }
-    if (g_diagOn && t->m_decode) DiagHit(Hit::Perf, "DXT texture decoded on the CPU (no WEBGL_compressed_texture_s3tc)");
+    if (g_diagOn && t->m_decode) DiagHit(Hit::Perf, "DXT texture decoded on the CPU (no S3TC, a size that is not a multiple of 4, or a volume)");
     *pp = t;
     return D3D_OK;
 }

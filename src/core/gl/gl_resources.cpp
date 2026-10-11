@@ -210,8 +210,17 @@ void WebGL2Backend::WriteTexture(GpuTexture *texture, const TextureRegion &r, co
 
     if (t->target == GL_TEXTURE_3D)
     {
-        // The whole level: its slices are consecutive rows.
-        const uint8_t *data = PrepareForGL(info, src, rowPitch, r.width, r.height * r.depth, t->decode, m_uploadScratch);
+        // The whole level: its slices are consecutive rows (decoded slice by slice for DXT, which is always decoded here:
+        // DecodeDxtOnCpu).
+        const uint8_t *data;
+        if (info.blockBytes && t->decode)
+        {
+            m_uploadScratch.resize((size_t)r.width * r.height * 4 * r.depth);
+            DecodeDXTVolume(info.d3d, src, rowPitch, r.width, r.height, r.depth, m_uploadScratch.data(), true);
+            data = m_uploadScratch.data();
+        }
+        else
+            data = PrepareForGL(info, src, rowPitch, r.width, r.height * r.depth, t->decode, m_uploadScratch);
         if (info.blockBytes && !t->decode)
             glCompressedTexSubImage3D(t->target, r.level, 0, 0, 0, r.width, r.height, r.depth, info.glInternal,
                                       (GLsizei)(rowPitch * FormatRows(info.d3d, r.height) * r.depth), data);

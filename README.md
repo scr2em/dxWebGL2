@@ -34,8 +34,8 @@ standalone library. License: **GPL-3.0-or-later** ([LICENSE](LICENSE), [NOTICE.m
 |---|---|
 | Direct3D 8 device: scenes, transforms, lights, materials, fog, clip planes, state blocks, viewports | implemented |
 | Fixed-function texture stage cascade (all `D3DTOP_*` except `BUMPENVMAP*`, texture coordinate generation, transforms, projected / 3D / cube textures) | implemented |
-| Textures (2D, cube, volume), surfaces, render targets, depth/stencil, vertex and index buffers, UP draws | implemented |
-| Texture formats incl. DXT1-5 (hardware S3TC or CPU decode), 16-bit, signed bump formats | implemented |
+| Textures (2D, cube, volume), surfaces, render targets, depth/stencil, vertex and index buffers (any stride: strides the GPU API rejects are padded), UP draws | implemented |
+| Texture formats incl. DXT1-5 (hardware S3TC, or CPU decode: without S3TC, for sizes that are not a multiple of 4 and for volumes), 16-bit, signed bump formats | implemented |
 | Vertex shaders 1.1, pixel shaders 1.0-1.4 (translated to GLSL ES 3.00) | implemented (only `texm3x3diff` is not, see [COVERAGE](docs/COVERAGE.md)) |
 | Device loss: WebGL context loss and restore mapped to `D3DERR_DEVICELOST` / `DEVICENOTRESET` / `Reset()` | implemented |
 | Multisampling (2-8 samples, resolved on present / read-back) | implemented (clamped to `GL_MAX_SAMPLES`) |

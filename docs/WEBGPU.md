@@ -6,8 +6,8 @@ it, the application can wait for the device (JSPI) and the browser gives an adap
 pixel shaders 1.x alike. It is built with `-DDXWEBGL2_WEBGPU=ON` (Emscripten's emdawnwebgpu port), the application is
 linked with `-sJSPI`; `dxwebgl2_SetBackend(DXWEBGL2_BACKEND_WEBGL2|WEBGPU)` or `-dxwebgl2-backend=webgl2|webgpu` force a
 backend. Every runtime, feature and regression test runs on both backends, and the choice of AUTO is tested in browsers
-with and without WebGPU (section 7). Vertex strides that are not a multiple of 4 are padded for WebGL2 as for WebGPU now
-(section 10).
+with and without WebGPU (section 7). The two emulations WebGL2 lacked (vertex strides that are not a multiple of 4, DXT
+textures whose size is not) are shared with it now (section 10).
 
 ```
   your Direct3D 8 code
@@ -138,7 +138,7 @@ request of 2 or more samples is rendered with 4 (`GpuCaps::maxSamples` = 4, the 
 | `X8R8G8B8` | no "X" formats | `bgra8unorm` with alpha set to 255 on upload |
 | `R8G8B8`, 16-bit colour (`R5G6B5`, `A1R5G5B5`, `X1R5G5B5`, `A4R4G4B4`, `X4R4G4B4`), `L8`, `A8`, `A8L8`, `A4L4` | no 24-bit, packed 16-bit, luminance or alpha formats | expanded to `bgra8unorm` on upload (`UnpackPixel`: the same expansion as the WebGL2 path, `A8` reads (0, 0, 0, a) like `GL_ALPHA`); 16-bit render targets are `bgra8unorm` (read-backs convert back to the surface format) |
 | `V8U8`, `Q8W8V8U8` | | `rg8snorm`, `rgba8snorm` |
-| DXT1-5 | `bc1/bc2/bc3-rgba-unorm` behind `texture-compression-bc` | requested when the adapter has it; textures whose size is not a multiple of 4 (a WebGPU rule for BC) and volumes are decoded on the CPU (`DecodeDXT`) to `rgba8unorm`, as are all of them without the feature or with `dxwebgl2_SetDisableS3TC` |
+| DXT1-5 | `bc1/bc2/bc3-rgba-unorm` behind `texture-compression-bc` | requested when the adapter has it; textures whose size is not a multiple of 4 (a WebGPU rule for BC) and volumes are decoded on the CPU (`DecodeDXT`) to `rgba8unorm`, as are all of them without the feature or with `dxwebgl2_SetDisableS3TC`. The decision is the core's (`DecodeDxtOnCpu`, `TextureDesc::decodeDxt`), the same for WebGL2, whose S3TC extension has the same rules |
 | Depth formats | `depth16unorm`, `depth24plus`, `depth24plus-stencil8` | `D16` -> `depth16unorm`; `D24X8`, `D32` -> `depth24plus`; `D24S8`, `D24X4S4`, `D15S1` -> `depth24plus-stencil8` |
 | Inputs the vertex format does not provide (GL reads (0,0,0,1)) | every shader input needs a buffer | the vertex stage is generated per input signature (section 4) and uses (0,0,0,1) for the others |
 | Integer vertex data (`UBYTE4`, `SHORT2`, `SHORT4` without normalization) | integer formats are read as integers | `uint8x4` / `sint16x2|4`, converted to float in the shader (the signature says which) |
@@ -270,11 +270,11 @@ or that prefer WebGL2, select it explicitly.
   rectangles, several rectangles, the viewport), `primitives` (indexed fan with a base vertex, point lists from
   buffers with and without indices, point sprite orientation, wireframe and point fill, a 22-byte stride from user
   memory and from a vertex buffer), `formats` (`X1R5G5B5`, `X4R4G4B4`, `R8G8B8`, `A4L4`, `X8R8G8B8` with alpha 0 in
-  memory, DXT1 of 6x6), `updates` (a dynamic
+  memory, DXT1 of 6x6, a DXT1 volume), `updates` (a dynamic
   vertex buffer rewritten with `DISCARD` and appended with `NOOVERWRITE` within a frame, a texture updated between two
-  draws, render targets of 32 and 16 bits read back, a lockable render target). One check is known to fail on WebGL2
-  and is reported as `XFAIL` there: S3TC textures whose size is not a multiple of 4 (they render black). Until step 3
-  the 22-byte stride failed there too (section 10).
+  draws, render targets of 32 and 16 bits read back, a lockable render target). Until step 3 two checks failed on
+  WebGL2 (reported as `XFAIL`): the 22-byte stride and the 6x6 DXT1 texture; both pass on both backends now
+  (section 10).
 * **Performance**: `d3d8_runtime_test --perf=N` draws N lit, textured quads per frame from a vertex buffer (world
   matrix and material per draw, texture every 8 draws) and prints the CPU time per frame on the rendering thread and the
   API calls per frame (the `STATS` categories count WebGPU calls for the WebGPU backend: draw = draws, state =
@@ -366,9 +366,29 @@ draw here: the program's block when the world matrix or the material changed).
   user memory is padded while it is streamed, a vertex buffer gets a second GL buffer that is filled once and then only
   for the vertices written since (`WriteBuffer` records the range), so a static buffer is repacked once. The helpers
   (`PaddedVertexStride`, `RepackVertices`, `core/backend.h`) are shared with the WebGPU backend's repacking.
-* Feature checks: the 22-byte stride passes on WebGL2; added: a 22-byte stride from a vertex buffer, rewritten
-  after a draw and drawn with a base vertex.
-* The WebGL2 and WebGPU frame hashes are unchanged.
+* **DXT sizes WebGL rejects** (`src/core/format.cpp`, `texture_storage.cpp`): `WEBGL_compressed_texture_s3tc` needs a
+  top level made of whole 4x4 blocks, like WebGPU's BC formats, and neither API has 3D S3TC textures. The decision to
+  decode on the CPU (`DecodeDxtOnCpu`) moved into the core and is the same for both backends; volume levels are decoded
+  slice by slice (`DecodeDXTVolume`).
+* Feature checks: the 22-byte stride and the 6x6 DXT1 texture pass on WebGL2 (no `XFAIL` left); added: a 22-byte stride
+  from a vertex buffer, rewritten after a draw and drawn with a base vertex, and a DXT1 volume texture.
+* The WebGL2 and WebGPU frame hashes are unchanged, and so is the picture comparison.
+
+Results (headless Chromium 141, SwiftShader, `scripts/test.sh --clean`):
+
+| Test | WebGL2 | WebGPU |
+|---|---|---|
+| runtime test, 8 modes | 8 pass (same expectations and probes as before) | 8 pass |
+| feature tests, 7 modes | all pass, no `XFAIL`: basic / basic-ext / basic-nopv / basic-nos3tc 111, contextloss 19, msaa 10, msaa-off 10 | all pass: the same counts |
+| frame hashes | unchanged (`1d18ca44807a52b7`, `ed22b76b734dad2a`, `7cf909c436852d70`, `dce88a9773c5c88d`) | unchanged (`72150f84d703cfff`, `de40f7a50b002796`, `978e065802f7aefd`, `91c551c5fd217ded`) |
+| examples | 2 pass | 2 pass |
+| picture comparison | the same numbers as in section 9 | |
+
+AUTO: in the browser with WebGPU the default and shaders scenes render through WebGPU with the `webgpu:` hashes; in
+the browser without WebGPU through WebGL2 with the WebGL2 hashes and the single line `WebGPU is not available, using
+WebGL2: no adapter: ...`. The consumer pages: package with WebGPU and JSPI -> WebGPU; the same without an adapter,
+without `navigator.gpu` or with a failing `requestDevice` -> WebGL2 (one line each); without JSPI -> WebGL2 (one
+line); built without `DXWEBGL2_WEBGPU` -> WebGL2 (no line).
 
 ## 11. Next steps
 

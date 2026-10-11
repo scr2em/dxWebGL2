@@ -472,6 +472,20 @@ bool ConvertPixels(D3DFORMAT sf, const void *srcv, uint32_t srcPitch,
     return true;
 }
 
+void DecodeDXTVolume(D3DFORMAT format, const uint8_t *src, uint32_t srcPitch, uint32_t w, uint32_t h, uint32_t depth,
+                     uint8_t *dst, bool rgba)
+{
+    // Slices are decoded one by one: a slice whose height is not a multiple of 4 ends with a partial block row.
+    const size_t srcSlice = (size_t)srcPitch * FormatRows(format, h), dstSlice = (size_t)w * h * 4;
+    for (uint32_t z = 0; z < depth; ++z) DecodeDXT(format, src + z * srcSlice, srcPitch, w, h, dst + z * dstSlice, w * 4, rgba);
+}
+
+bool DecodeDxtOnCpu(const FormatInfo &info, uint32_t width, uint32_t height, bool volume, bool s3tc)
+{
+    if (info.conv != UploadConv::DXT) return false;
+    return !s3tc || (width & 3) != 0 || (height & 3) != 0 || volume;
+}
+
 const uint8_t *PrepareForGL(const FormatInfo &info, const uint8_t *src, uint32_t srcPitch,
                             uint32_t w, uint32_t h, bool decodeDxt, std::vector<uint8_t> &scratch)
 {
